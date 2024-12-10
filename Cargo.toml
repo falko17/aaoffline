@@ -1,0 +1,33 @@
+[package]
+name = "aaoffline"
+description = "Downloads cases from Ace Attorney Online to be playable offline"
+repository = "https://github.com/falko17/aaoffline"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+anyhow = { version = "1.0.94", features = ["backtrace"] }
+bytes = "1.9.0"
+chrono = "0.4.39"
+clap = { version = "4.5.23", features = ["derive"] }
+clap-verbosity-flag = "3.0.1"
+colored = "2.1.0"
+env_logger = "0.11.5"
+exitcode = "1.1.2"
+futures = "0.3.31"
+human-panic = "2.0.2"
+indicatif = "0.17.9"
+itertools = "0.13.0"
+log = "0.4.22"
+regex = "1.11.1"
+reqwest = { version = "0.12.9" }
+serde = { version = "1.0.216", features = ["derive"] }
+serde_json = "1.0.133"
+serde_with = { version = "3.11.0", features = ["chrono"] }
+tokio = { version = "1.42.0", features = ["full"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
