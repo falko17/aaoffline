@@ -43,3 +43,11 @@ cargo build --release
 ```
 
 Afterwards, you can find the built `aaoffline` executable inside `target/release`.
+
+## Troubleshooting
+
+### The blips sound weird in Firefox.
+
+This is due to the HTML5 audio API being implemented differently in Firefox, refer to [#1](https://github.com/falko17/aaoffline/issues/1) for details.
+As a workaround, use the `--disable-html5-audio` option with `aaoffline`, and then use a local HTTP server to serve the files—this way does not use the HTML5 audio API.
+If you have Python installed, you can run `python3 -m http.server -d CASE_DIRECTORY` to run a simple web server, then you just need to access the URL it outputs.

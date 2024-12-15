@@ -79,6 +79,17 @@ struct Args {
     #[arg(long, value_enum, default_value_t)]
     http_handling: HttpHandling,
 
+    /// Whether to disable the use of HTML5 audio for Howler.js.
+    ///
+    /// Enabling this will lead to CORS errors appearing in your browser's console when you open
+    /// the HTML file locally, since it isn't allowed to access other files. Howler.js will then
+    /// switch to HTML5 audio automatically. However, if you plan to use a local web server to
+    /// open the player, it is recommended to enable this option, since those errors won't appear
+    /// there (and there's a problem with how Firefox handles HTML5 audio, making this the better
+    /// option if you plan to use Firefox.)
+    #[arg(long)]
+    disable_html5_audio: bool,
+
     #[cfg(not(debug_assertions))]
     #[command(flatten)]
     verbose: clap_verbosity_flag::Verbosity<InfoLevel>,

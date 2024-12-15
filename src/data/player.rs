@@ -408,7 +408,7 @@ impl Player {
                 let preload_pos = player.find(PRELOAD).context("preload option not present")?;
                 replacements.push((
                     preload_pos + PRELOAD.len()..preload_pos + PRELOAD.len(),
-                    String::from(", html5: true"),
+                    format!(", html5: {}", !self.args.disable_html5_audio),
                 ));
             } else if let Err(e) = result {
                 warn!("Could not download Howler.js, skipping: {e}");
