@@ -8,7 +8,7 @@ use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use regex::Regex;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use crate::data::case::Case;
@@ -302,48 +302,65 @@ impl<'a> AssetDownloader<'a> {
         pb: &ProgressBar,
     ) -> Result<()> {
         let paths = &self.site_data.site_paths;
+        let used_sprites = case.get_used_sprites();
         let data = case
             .trial_data
             .as_object_mut()
             .context("Trial data must be an object")?;
+        let cloned_profiles = data["profiles"].clone();
+        let id_profiles: HashMap<i64, &str> = cloned_profiles
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x.as_object())
+            .map(|x| {
+                (
+                    x["id"].as_i64().expect("profile ID must be number"),
+                    x["base"].as_str().expect("profile base must be string"),
+                )
+            })
+            .collect();
+
+        let used_default_sprites = used_sprites
+            .into_iter()
+            // Only non-positive sprite IDs are default sprites.
+            .filter(|x| x.1 < 0)
+            .map(|x| (id_profiles[&x.0], -x.1))
+            .unique()
+            .collect_vec();
+        trace!("{:?}", used_default_sprites);
 
         const SPRITE_KINDS: [&str; 3] = ["talking", "still", "startup"];
 
-        // Download default sprites. We don't know which ones end up actually used
-        // (well, we could find out, but it takes a lot of effort which I don't want to put in
-        // right now), so we just download all of them.
-        for (base, num) in &self.site_data.default_data.default_profiles_nb {
-            for i in 1..=*num {
-                for kind in SPRITE_KINDS {
-                    if kind == "startup"
-                        && !self
-                            .site_data
-                            .default_data
-                            .default_profiles_startup
-                            .contains(&format!("{base}/{i}"))
-                    {
-                        continue;
-                    }
-                    self.collector.collect_download_with_name(
-                        &mut Value::String(format!("{i}.gif")),
-                        &format!("assets/{base}_{i}_{kind}.gif"),
-                        Some(paths.sprite_path(kind, base)),
-                        Some(false),
-                        // Some default animations may actually be missing even though they're
-                        // declared in the array, such as Redd/2.gif.
-                        true,
-                    );
+        // Download only the default sprites that ended up actually being used.
+        for (base, i) in used_default_sprites {
+            for kind in SPRITE_KINDS {
+                if kind == "startup"
+                    && !self
+                        .site_data
+                        .default_data
+                        .default_profiles_startup
+                        .contains(&format!("{base}/{i}"))
+                {
+                    continue;
                 }
+                self.collector.collect_download_with_name(
+                    &mut Value::String(format!("{i}.gif")),
+                    &format!("assets/{base}_{i}_{kind}.gif"),
+                    Some(paths.sprite_path(kind, base)),
+                    Some(false),
+                    false,
+                );
             }
         }
 
         // Download the profiles.
-        for profile in data["profiles"]
+        let profiles = data["profiles"]
             .as_array_mut()
             .unwrap()
             .iter_mut()
-            .filter_map(|x| x.as_object_mut())
-        {
+            .filter_map(|x| x.as_object_mut());
+        for profile in profiles {
             if profile["icon"].as_str().is_none_or(|x| x.is_empty()) {
                 // This does not use an external URL.
                 // To avoid too many bookkeeping shenanigans here, we just

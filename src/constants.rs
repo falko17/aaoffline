@@ -21,10 +21,6 @@ pub(crate) mod re {
         Regex::new(r#"(?s)var initial_trial_data = JSON\.parse\("(.*?)"\);"#).unwrap()
     });
 
-    pub(crate) static DEFAULT_PROFILES_NB_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?s)var default_profiles_nb = JSON\.parse\("(.*?)"\);"#).unwrap()
-    });
-
     pub(crate) static DEFAULT_PROFILES_STARTUP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r#"(?s)var default_profiles_startup = JSON\.parse\("(.*?)"\);"#).unwrap()
     });
@@ -77,9 +73,8 @@ pub(crate) mod re {
         Regex::new(r"(?s)getDefaultSpriteUrl\(base, sprite_id, status\)\s*\{(.*?)\}").unwrap()
     });
 
-    pub(crate) static PRELOAD_PLACES_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"preloadPlaceImages\(default_places\[i\], img_container\)").unwrap()
-    });
+    pub(crate) static PRELOAD_REGEX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"translateNode\(images_loading_label\);").unwrap());
 
     pub(crate) static GOOGLE_ANALYTICS_REGEX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"(?s)<script>.*?UA-.*?</script>"#).unwrap());

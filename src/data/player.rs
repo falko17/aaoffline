@@ -440,8 +440,10 @@ impl Player {
             );
         }
 
-        if let Some(default_places) = re::PRELOAD_PLACES_REGEX.find(player) {
-            replacements.push((default_places.range(), String::new()));
+        // We disable preloading, it only leads to some errors (since we do not download all
+        // default sprites) and we don't gain anything, since the assets are already local.
+        if let Some(default_places) = re::PRELOAD_REGEX.find(player) {
+            replacements.push((default_places.range(), String::from("return;")));
         } else {
             warn!("Could not find default place preloading in player, skipping.");
         }

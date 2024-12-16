@@ -88,12 +88,46 @@ impl Case {
         debug!("{:?}", trial_information);
         trace!("{:?}", trial_data);
 
-        // FIXME: Retrieve default data immediately after this step!
-
         Ok(Case {
             trial_information,
             trial_data,
         })
+    }
+
+    // First element is character ID, second is sprite ID.
+    pub(crate) fn get_used_sprites(&self) -> Vec<(i64, i64)> {
+        trace!("{}", self.trial_data);
+        // NOTE: We are filtering out numbers here because for some reason, the arrays always
+        // contain a "0: 0" element.
+        self.trial_data
+            .as_object()
+            .expect("Trial data must be object")["frames"]
+            .as_array()
+            .expect("frames must be array")
+            .iter()
+            .filter(|x| !x.is_number())
+            .flat_map(|x| {
+                x.as_object().expect("frame must be object")["characters"]
+                    .as_array()
+                    .expect("characters in frame must be array")
+            })
+            .filter(|x| !x.is_number())
+            .filter_map(|x| {
+                let character = x.as_object().expect("character in frame must be object");
+                let profile_id = &character["profile_id"];
+                let sprite_id = &character["sprite_id"];
+                if profile_id.is_null() || sprite_id.is_null() {
+                    // Not sure what it means when this occurs, but it does happen sometimes.
+                    // When it does, we just skip this.
+                    None
+                } else {
+                    Some((
+                        profile_id.as_i64().expect("profile_id must be integer"),
+                        sprite_id.as_i64().expect("sprite_id must be integer"),
+                    ))
+                }
+            })
+            .collect()
     }
 
     pub(crate) fn serialize_to_js(&self) -> Result<String> {

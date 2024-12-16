@@ -6,21 +6,18 @@ use log::{error, trace};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::constants::{re, BRIDGE_URL};
 
 #[derive(Debug)]
 pub(crate) struct DefaultData {
-    pub(crate) default_profiles_nb: HashMap<String, i64>,
     pub(crate) default_profiles_startup: HashSet<String>,
     pub(crate) default_places: Value,
 }
 
 impl DefaultData {
     pub(crate) fn write_default_module(&self, module: &mut String) -> Result<()> {
-        // We are here for the second time.
-        // Time to write the default_places back.
         let default_places_text = serde_json::to_string(&self.default_places)?;
         let default_places_match = re::DEFAULT_PLACES_REGEX
             .find(module)
@@ -33,25 +30,6 @@ impl DefaultData {
     }
 
     fn from_default_module(module: &str) -> Result<Self> {
-        // We are here for the first time.
-        let nb_value =
-            super::retrieve_escaped_json::<Value>(&re::DEFAULT_PROFILES_NB_REGEX, module)?;
-        let default_profiles_nb = if let Value::Object(nb_map) = nb_value {
-            nb_map
-                .into_iter()
-                .map(|x| {
-                    (
-                        x.0,
-                        x.1.as_i64()
-                            .expect("Default profile values must be integers!"),
-                    )
-                })
-                .collect()
-        } else {
-            error!("Default profiles number map is not an object!");
-            std::process::exit(exitcode::DATAERR);
-        };
-
         let startup_value =
             super::retrieve_escaped_json::<Value>(&re::DEFAULT_PROFILES_STARTUP_REGEX, module)?;
         let default_profiles_startup = if let Value::Object(startup_map) = startup_value {
@@ -64,7 +42,6 @@ impl DefaultData {
         let default_places =
             super::retrieve_escaped_json::<Value>(&re::DEFAULT_PLACES_REGEX, module)?;
         Ok(DefaultData {
-            default_profiles_nb,
             default_profiles_startup,
             default_places,
         })

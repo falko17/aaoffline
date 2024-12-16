@@ -43,7 +43,6 @@ enum HttpHandling {
 ///
 /// Simply pass the URL (i.e., `https://aaonline.fr/player.php?trial_id=YOUR_ID`) to this script.
 /// You can also directly pass the ID instead.
-/// NOTE: Currently, all default sprites are downloaded, which may lead to a high download size.
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, arg_required_else_help(true))]
 struct Args {
@@ -98,6 +97,7 @@ struct Args {
     #[command(flatten)]
     verbose: clap_verbosity_flag::Verbosity<DebugLevel>,
     // TODO: Offer option for single HTML file
+    // TODO: Offer multiple cases at once
 }
 
 #[derive(Debug)]

@@ -3,10 +3,9 @@
 Downloads cases from [Ace Attorney Online](https://aaonline.fr) to be playable offline.
 
 > [!WARNING]
-> This is in an early state and may not work correctly. Currently, I'm aware of the following problems:
+> This is in an early state and may not work correctly. Currently, I'm aware of the following problem:
 >
 > 1. Psyche locks won't work correctly.
-> 2. All default sprites are downloaded (even if not all of them are used), leading to quite a big download size (≈ 150 MB). This takes some effort to fix, so I haven't implemented it yet.
 >
 > Additionally, the code is still a bit messy and largely undocumented.
 
