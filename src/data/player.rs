@@ -1,7 +1,7 @@
 //! Contains data model related to the case player and its scripts.
 
 use crate::constants::{re, BITBUCKET_URL};
-use crate::download::{download_url, AssetDownloader};
+use crate::download::{download_url, make_data_url};
 use crate::transform::php;
 use crate::Args;
 use anyhow::{Context, Result};
@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use indicatif::ProgressBar;
 use log::{debug, trace, warn};
 
+use regex::{Captures, Regex};
 use serde_json::Value;
 
 use std::collections::HashSet;
@@ -20,11 +21,34 @@ use super::site::SiteData;
 
 type ModuleTransformer = fn(&Player, &str, &mut String) -> Result<()>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct PlayerScripts {
     pub(crate) scripts: Option<String>,
     encountered_modules: HashSet<String>,
     args: Args,
+}
+
+#[derive(PartialEq, Eq, Debug)]
+enum TransformationTarget {
+    Player,
+    Scripts,
+}
+
+#[derive(Debug)]
+struct PlayerTransformation {
+    target: TransformationTarget,
+    range: Range<usize>,
+    replacement: String,
+}
+
+impl PlayerTransformation {
+    fn new(target: TransformationTarget, range: Range<usize>, replacement: String) -> Self {
+        PlayerTransformation {
+            target,
+            range,
+            replacement,
+        }
+    }
 }
 
 impl PlayerScripts {
@@ -165,24 +189,22 @@ window.addEventListener('load', function() {{
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Player {
     pub(crate) site_data: SiteData,
     pub(crate) args: Args,
-    pub(crate) case: Case,
     pub(crate) player: Option<String>,
     pub(crate) scripts: Option<PlayerScripts>,
 }
 
 impl Player {
-    pub(crate) async fn new(args: Args, case: Case) -> Result<Self> {
+    pub(crate) async fn new(args: Args) -> Result<Self> {
         let default_text =
             PlayerScripts::retrieve_js_text("default_data", &args.player_version).await?;
         let site_data = SiteData::from_site_data(&default_text).await?;
         let mut player = Player {
             site_data,
             args: args.clone(),
-            case,
             scripts: None,
             player: None,
         };
@@ -195,12 +217,8 @@ impl Player {
     }
 
     fn transform_module(&self, name: &str, content: &mut String) -> Result<()> {
-        // These modules require special handling:
-        if name == "trial" {
-            // This is really a PHP script, so we need to replace its blocks first.
-            php::transform_trial_blocks(self, content)
-        } else if name == "default_data" {
-            // And here we need to insert our modified default data, to avoid the default
+        if name == "default_data" {
+            // Here we need to insert our modified default data, to avoid the default
             // resources being retrieved from the AAO server.
             self.site_data.default_data.write_default_module(content)
         } else {
@@ -257,39 +275,62 @@ impl Player {
         Ok(())
     }
 
-    pub(crate) fn transform_player(&mut self) -> Result<()> {
-        php::transform_player_blocks(self)
+    pub(crate) fn transform_player(&mut self, case: &Case) -> Result<()> {
+        // We need to temporarily move the scripts out here, or the borrow checker will complain.
+        let mut scripts = self.scripts.as_mut().unwrap().scripts.take().unwrap();
+        // Important: Trial needs to be modified before player, as the trial will then be inserted
+        // as part of the scripts into the player.
+        php::transform_trial_blocks(self, case, &mut scripts)?;
+        self.scripts.as_mut().unwrap().scripts = Some(scripts);
+        php::transform_player_blocks(self, case)
     }
 
-    pub(crate) async fn retrieve_player_misc_sources(
-        &mut self,
-        output: String,
-        pb: &ProgressBar,
-    ) -> Result<()> {
-        let mut replacements: Vec<(Range<usize>, String)> = Vec::new();
+    fn regex_for_both<'a>(
+        regex: &'a Regex,
+        player: &'a str,
+        scripts: &'a str,
+    ) -> Vec<(TransformationTarget, Captures<'a>)> {
+        regex
+            .captures_iter(player)
+            .map(|x| (TransformationTarget::Player, x))
+            .chain(
+                regex
+                    .captures_iter(scripts)
+                    .map(|x| (TransformationTarget::Scripts, x)),
+            )
+            .collect()
+    }
+
+    pub(crate) async fn retrieve_player_misc_sources(&mut self, pb: &ProgressBar) -> Result<()> {
+        let mut replacements: Vec<PlayerTransformation> = Vec::new();
         let player = self.player.as_ref().unwrap();
+        let scripts = self.scripts.as_ref().unwrap().scripts.as_ref().unwrap();
         // We need to remove the Google Analytics tag at the bottom of the page.
         if let Some(m) = re::GOOGLE_ANALYTICS_REGEX.find(player) {
-            replacements.push((m.range(), String::new()));
+            replacements.push(PlayerTransformation::new(
+                TransformationTarget::Player,
+                m.range(),
+                String::new(),
+            ));
         } else {
             warn!("Could not find Google Analytics tag in player, skipping.");
         }
 
         let lang_dir = self.site_data.site_paths.lang_dir.clone();
-        let downloader = AssetDownloader::new(self.args.clone(), output, &mut self.site_data);
-        let css_caps: Vec<_> = re::CSS_REGEX.captures_iter(player).collect();
-        let style_caps: Vec<_> = re::STYLE_INCLUDE_REGEX.captures_iter(player).collect();
-        let src_caps: Vec<_> = re::SRC_REGEX.captures_iter(player).collect();
+        let css_caps: Vec<_> = Self::regex_for_both(&re::CSS_REGEX, player, scripts);
+        let style_caps: Vec<_> = Self::regex_for_both(&re::STYLE_INCLUDE_REGEX, player, scripts);
+        let src_caps: Vec<_> = Self::regex_for_both(&re::SRC_REGEX, player, scripts);
         pb.inc_length((css_caps.len() + style_caps.len() + src_caps.len() + 1) as u64);
 
-        for css in css_caps {
+        for (target, css) in css_caps {
             let whole = css.get(0).unwrap();
             let group = css.get(1).unwrap();
             let result = download_url(group.as_str(), &self.args.http_handling).await;
             pb.inc(1);
 
             if let Ok((_, content)) = result {
-                replacements.push((
+                replacements.push(PlayerTransformation::new(
+                    target,
                     whole.range(),
                     format!("<style>{}</style>", String::from_utf8(content.to_vec())?),
                 ));
@@ -299,7 +340,7 @@ impl Player {
         }
 
         // We also need to handle any dynamic CSS inclusions.
-        for include in style_caps {
+        for (target, include) in style_caps {
             let whole = include.get(0).unwrap();
             let group = include.get(1).unwrap();
             let result = download_url(
@@ -309,10 +350,16 @@ impl Player {
             .await;
             pb.inc(1);
             if let Ok((_, content)) = result {
-                replacements.push((whole.range(), String::new()));
-                // Now, we need to put the CSS thing into a <style> tag at the top.
-                replacements.push((
-                    0..0,
+                replacements.push(PlayerTransformation::new(
+                    target,
+                    whole.range(),
+                    String::new(),
+                ));
+                // Now, we need to put the CSS thing into a <style> tag in the <head>.
+                let head_position = player.find("</head>").expect("No closing head found!");
+                replacements.push(PlayerTransformation::new(
+                    TransformationTarget::Player,
+                    head_position..head_position,
                     format!("\n<style>{}</style>", String::from_utf8(content.to_vec())?),
                 ));
             } else if let Err(e) = result {
@@ -323,7 +370,7 @@ impl Player {
         // Additionally, we need to download the language data.
         // TODO: Make some warnings into errors
         let lang = re::LANGUAGE_INCLUDE_REGEX
-            .captures(player)
+            .captures(scripts)
             .context("Could not find language data in source.")?;
         let config_lang = &self.args.language;
         let func_end = lang.get(0).unwrap().end();
@@ -348,35 +395,52 @@ impl Player {
             Self::merge(&mut lang_json, lang);
         }
 
-        // First, we need to replace the langauge object.
+        // First, we need to replace the language object.
         let lang_range = re::LANGUAGE_REGEX
-            .find(player)
-            .context("Could not find language definition in source.")?
+            .find(scripts)
+            .context("Could not find language definition in scripts.")?
             .range();
-        replacements.push((
+        replacements.push(PlayerTransformation::new(
+            TransformationTarget::Scripts,
             lang_range,
             format!("var lang = {};", serde_json::to_string(&lang_json)?),
         ));
 
         // Then, we need to make sure the script doesn't try to dynamically retrieve languages.
         // We do this by just setting the list of files to retrieve to an empty list.
-        replacements.push((group.range(), String::new()));
+        replacements.push(PlayerTransformation::new(
+            TransformationTarget::Scripts,
+            group.range(),
+            String::new(),
+        ));
         // We also need to call the provided callback immediately.
         // To do this, we first empty the original callback...
-        replacements.push((callback.range(), String::new()));
+        replacements.push(PlayerTransformation::new(
+            TransformationTarget::Scripts,
+            callback.range(),
+            String::new(),
+        ));
         // ...then we add the callback code as a normal block directly below.
-        replacements.push((func_end..func_end + 1, String::from(callback.as_str())));
+        replacements.push(PlayerTransformation::new(
+            TransformationTarget::Scripts,
+            func_end..func_end + 1,
+            String::from(callback.as_str()),
+        ));
 
-        // And we download any sources present in the JavaScript or CSS.
-        for src in src_caps {
+        // We download any sources present in the JavaScript or CSS.
+        for (target, src) in src_caps {
             let group = src.get(1).or_else(|| src.get(2)).unwrap();
             if group.as_str().starts_with("data:") {
                 // No need to do anything about data URLs.
                 continue;
             }
-            let result = downloader.download_url(group.as_str()).await;
-            if let Ok(path) = result {
-                replacements.push((group.range(), path));
+            let result = download_url(group.as_str(), &self.args.http_handling).await;
+            if let Ok((_, content)) = result {
+                replacements.push(PlayerTransformation::new(
+                    target,
+                    group.range(),
+                    make_data_url(&content)?,
+                ));
             } else if let Err(e) = result {
                 warn!("Could not download asset, skipping: {e}");
             }
@@ -384,7 +448,7 @@ impl Player {
         }
 
         // We need howler.js for sound effects.
-        if let Some(howler) = re::HOWLER_REGEX.captures(player) {
+        if let Some(howler) = re::HOWLER_REGEX.captures(scripts) {
             let configuration = howler.get(1).unwrap().as_str();
             let result = download_url(
                 &format!(
@@ -402,11 +466,19 @@ impl Player {
                     String::from_utf8(content.to_vec())?,
                     configuration
                 );
-                replacements.push((howler.get(0).unwrap().range(), output));
+                replacements.push(PlayerTransformation::new(
+                    TransformationTarget::Scripts,
+                    howler.get(0).unwrap().range(),
+                    output,
+                ));
                 // We need to use the HTML5 audio option for Howler, or we'll run into CORS errors.
+                // (See #1 for why some users might still want to disable HTML5 audios.)
                 const PRELOAD: &str = "preload: true";
-                let preload_pos = player.find(PRELOAD).context("preload option not present")?;
-                replacements.push((
+                let preload_pos = scripts
+                    .find(PRELOAD)
+                    .context("preload option not present")?;
+                replacements.push(PlayerTransformation::new(
+                    TransformationTarget::Scripts,
                     preload_pos + PRELOAD.len()..preload_pos + PRELOAD.len(),
                     format!(", html5: {}", !self.args.disable_html5_audio),
                 ));
@@ -414,43 +486,63 @@ impl Player {
                 warn!("Could not download Howler.js, skipping: {e}");
             }
         } else {
-            warn!("Could not find Howler.js in player, skipping.");
+            warn!("Could not find Howler.js in scripts, skipping.");
         }
 
         // Since the default voices are always retrieved from the server, we need to change the
         // getVoiceUrl function to point to our local files.
-        if let Some(voice) = re::VOICE_REGEX.captures(player) {
+        if let Some(voice) = re::VOICE_REGEX.captures(scripts) {
             let group = voice.get(1).unwrap();
             let output =
                 String::from("return 'assets/voice_singleblip_' + (-voice_id) + '.' + ext;");
-            replacements.push((group.range(), output));
+            replacements.push(PlayerTransformation::new(
+                TransformationTarget::Scripts,
+                group.range(),
+                output,
+            ));
         } else {
-            warn!("Could not find getVoiceUrl in player, skipping.");
+            warn!("Could not find getVoiceUrl in scripts, skipping.");
         }
 
         // We need to do the same for the default sprites.
-        if let Some(default_sprites) = re::DEFAULT_SPRITES_REGEX.captures(player) {
+        if let Some(default_sprites) = re::DEFAULT_SPRITES_REGEX.captures(scripts) {
             let group = default_sprites.get(1).unwrap();
             let output =
                 String::from("return 'assets/' + base + '_' + sprite_id + '_' + status + '.gif';");
-            replacements.push((group.range(), output));
+            replacements.push(PlayerTransformation::new(
+                TransformationTarget::Scripts,
+                group.range(),
+                output,
+            ));
         } else {
             warn!(
-                "Could not find default sprites in player, skipping. Some sprites may be missing."
+                "Could not find default sprites in scripts, skipping. Some sprites may be missing."
             );
         }
 
+        // FIXME: Replace psyche locks with (up to 10 per type) soft links.
+
         // We disable preloading, it only leads to some errors (since we do not download all
         // default sprites) and we don't gain anything, since the assets are already local.
-        if let Some(default_places) = re::PRELOAD_REGEX.find(player) {
-            replacements.push((default_places.range(), String::from("return;")));
+        if let Some(default_places) = re::PRELOAD_REGEX.find(scripts) {
+            replacements.push(PlayerTransformation::new(
+                TransformationTarget::Scripts,
+                default_places.range(),
+                String::from("return;"),
+            ));
         } else {
-            warn!("Could not find default place preloading in player, skipping.");
+            warn!("Could not find default place preloading in scripts, skipping.");
         }
 
-        replacements.sort_by(|a, b| b.0.start.cmp(&a.0.start));
-        for (range, output) in replacements {
-            self.player.as_mut().unwrap().replace_range(range, &output);
+        replacements.sort_by(|a, b| b.range.start.cmp(&a.range.start));
+        for transformation in replacements.iter() {
+            let receiver = match transformation.target {
+                TransformationTarget::Player => self.player.as_mut().unwrap(),
+                TransformationTarget::Scripts => {
+                    self.scripts.as_mut().unwrap().scripts.as_mut().unwrap()
+                }
+            };
+            receiver.replace_range(transformation.range.clone(), &transformation.replacement);
         }
 
         // We also need to retrieve any dependencies present in the CSS.
@@ -469,11 +561,10 @@ impl Player {
                 pb.inc(1);
                 continue;
             }
-            let result = downloader
-                .download_url(&format!("CSS/{}", group.as_str()))
-                .await;
-            if let Ok(path) = result {
-                replacements.push((group.range(), path));
+            let result =
+                download_url(&format!("CSS/{}", group.as_str()), &self.args.http_handling).await;
+            if let Ok((_, content)) = result {
+                replacements.push((group.range(), make_data_url(&content)?));
             } else if let Err(e) = result {
                 warn!("Could not download CSS dependency, skipping: {e}");
             }

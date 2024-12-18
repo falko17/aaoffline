@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use crate::constants::{re, BRIDGE_URL};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DefaultData {
     pub(crate) default_profiles_startup: HashSet<String>,
     pub(crate) default_places: Value,
@@ -48,7 +48,7 @@ impl DefaultData {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct SitePaths {
     bg_subdir: String,
     cache_dir: String,
@@ -150,7 +150,7 @@ impl SitePaths {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct SiteData {
     pub(crate) default_data: DefaultData,
     pub(crate) site_paths: SitePaths,

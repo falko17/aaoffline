@@ -2,6 +2,7 @@
 
 /// Contains methods and models related to detecting and transforming PHP blocks.
 pub(crate) mod php {
+    use std::ops::Range;
     use std::sync::LazyLock;
 
     use anyhow::Result;
@@ -9,6 +10,7 @@ pub(crate) mod php {
     use regex::Regex;
 
     use crate::constants::{re, UPDATE_MESSAGE};
+    use crate::data::case::Case;
     use crate::data::player::Player;
 
     /// A matched <?php ... ?> block within the player.
@@ -41,27 +43,28 @@ pub(crate) mod php {
     struct ExpectedPhpBlock {
         /// A human-readable ID for this block to uniquely identify it.
         id: &'static str,
-        start: usize,
-        end: usize,
+        range: Option<Range<usize>>,
         /// A regex to detect this PHP block.
         detector: LazyLock<Regex>,
         /// A function with which the contents of this PHP block can be transformed.
-        replacer: Option<fn(&Player) -> Result<String>>,
+        replacer: Option<fn(&Player, &Case) -> Result<String>>,
     }
 
     impl ExpectedPhpBlock {
         fn expect_match(&self, other: &FoundPhpBlock) {
-            if (other.start, other.end) != (self.start, self.end) {
-                warn!(
-                "Expected PHP block {} to be at character range ({}–{}), but was at ({}–{}). {UPDATE_MESSAGE}",
-                self.id, self.start, self.end, other.start, other.end
-            );
+            if let Some(Range { start, end }) = self.range {
+                if (other.start, other.end) != (start, end) {
+                    warn!(
+                    "Expected PHP block {} to be at character range ({start}–{end}), but was at ({}–{}). {UPDATE_MESSAGE}",
+                    self.id, other.start, other.end
+                );
+                }
             }
         }
 
-        fn replace(&self, player_scripts: &Player) -> Result<String> {
+        fn replace(&self, player_scripts: &Player, case: &Case) -> Result<String> {
             if let Some(replacer) = self.replacer {
-                replacer(player_scripts)
+                replacer(player_scripts, case)
             } else {
                 Ok(String::new())
             }
@@ -81,12 +84,24 @@ pub(crate) mod php {
             start: usize,
             end: usize,
             detector: LazyLock<Regex>,
-            replacer: Option<fn(&Player) -> Result<String>>,
+            replacer: Option<fn(&Player, &Case) -> Result<String>>,
         ) -> ExpectedPhpBlock {
             ExpectedPhpBlock {
                 id,
-                start,
-                end,
+                range: Some(start..end),
+                detector,
+                replacer,
+            }
+        }
+
+        const fn new_rangeless(
+            id: &'static str,
+            detector: LazyLock<Regex>,
+            replacer: Option<fn(&Player, &Case) -> Result<String>>,
+        ) -> ExpectedPhpBlock {
+            ExpectedPhpBlock {
+                id,
+                range: None,
                 detector,
                 replacer,
             }
@@ -94,7 +109,8 @@ pub(crate) mod php {
     }
 
     fn transform_blocks(
-        scripts: &Player,
+        player: &Player,
+        case: &Case,
         source: &mut String,
         blocks: &[ExpectedPhpBlock],
     ) -> Result<()> {
@@ -132,7 +148,7 @@ pub(crate) mod php {
                 let result = result[0];
                 let mut block = FoundPhpBlock::new(start, end);
                 result.1.expect_match(&block);
-                block.replaced = Some(result.1.replace(scripts)?);
+                block.replaced = Some(result.1.replace(player, case)?);
 
                 // Mark block as visited.
                 visited.push(result.0);
@@ -164,28 +180,28 @@ pub(crate) mod php {
         Ok(())
     }
 
-    pub(crate) fn transform_trial_blocks(player: &Player, source: &mut String) -> Result<()> {
+    pub(crate) fn transform_trial_blocks(
+        player: &Player,
+        case: &Case,
+        source: &mut String,
+    ) -> Result<()> {
         static EXPECTED_TRIAL_BLOCKS: [ExpectedPhpBlock; 2] = [
-            ExpectedPhpBlock::new(
+            ExpectedPhpBlock::new_rangeless(
                 "common_render",
-                0,
-                238,
                 LazyLock::new(|| Regex::new(r"include\('common_render\.php'\);").unwrap()),
                 None,
             ),
-            ExpectedPhpBlock::new(
+            ExpectedPhpBlock::new_rangeless(
                 "trial_data",
-                1063,
-                2712,
                 LazyLock::new(|| Regex::new(r"var trial_information;").unwrap()),
-                Some(|x| x.case.serialize_to_js()),
+                Some(|_, case| case.serialize_to_js()),
             ),
         ];
 
-        transform_blocks(player, source, &EXPECTED_TRIAL_BLOCKS)
+        transform_blocks(player, case, source, &EXPECTED_TRIAL_BLOCKS)
     }
 
-    pub(crate) fn transform_player_blocks(player: &mut Player) -> Result<()> {
+    pub(crate) fn transform_player_blocks(player: &mut Player, case: &Case) -> Result<()> {
         static EXPECTED_PLAYER_BLOCKS: [ExpectedPhpBlock; 5] = [
             ExpectedPhpBlock::new(
                 "common_render",
@@ -199,15 +215,15 @@ pub(crate) mod php {
                 224,
                 272,
                 LazyLock::new(|| Regex::new(r"echo language_backend\(.*\)").unwrap()),
-                Some(|x| Ok(x.args.language.clone())),
+                Some(|p, _| Ok(p.args.language.clone())),
             ),
             ExpectedPhpBlock::new(
                 "script",
                 276,
                 396,
                 LazyLock::new(|| Regex::new(r"include\('bridge\.js\.php'\);").unwrap()),
-                Some(|x| {
-                    Ok(x.scripts
+                Some(|p, _| {
+                    Ok(p.scripts
                         .as_ref()
                         .unwrap()
                         .scripts
@@ -223,23 +239,18 @@ pub(crate) mod php {
                 LazyLock::new(|| {
                     Regex::new(r"echo 'Ace Attorney Online - Trial Player \(Loading\)';").unwrap()
                 }),
-                Some(|x| Ok(x.case.trial_information.title.clone())),
+                Some(|_, case| Ok(case.trial_information.title.clone())),
             ),
-            ExpectedPhpBlock::new(
+            ExpectedPhpBlock::new_rangeless(
                 "heading",
-                996,
-                1082,
                 LazyLock::new(|| Regex::new(r"echo 'Loading trial \.\.\.';").unwrap()),
-                Some(|x| Ok(x.case.trial_information.title.clone())),
+                Some(|_, case| Ok(case.trial_information.title.clone())),
             ),
         ];
 
         let mut playertext = player.player.as_mut().unwrap().clone();
-        transform_blocks(player, &mut playertext, &EXPECTED_PLAYER_BLOCKS)?;
+        transform_blocks(player, case, &mut playertext, &EXPECTED_PLAYER_BLOCKS)?;
         player.player = Some(playertext);
         Ok(())
     }
 }
-
-/// Contains methods and models related to detecting and transforming JavaScript scripts.
-pub(crate) mod js {}

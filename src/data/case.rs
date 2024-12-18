@@ -29,20 +29,47 @@ pub(crate) struct TrialInformation {
     language: String,
     #[serde_as(as = "TimestampSeconds<i64, Flexible>")]
     last_edit_date: DateTime<Utc>,
-    sequence: Option<Sequence>,
+    pub(crate) sequence: Option<Sequence>,
     pub(crate) title: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Sequence {
+pub struct Sequence {
     title: String,
     list: Vec<SequenceEntry>,
 }
 
+impl Sequence {
+    pub(crate) fn entry_ids(&self) -> Vec<u32> {
+        self.list.iter().map(|x| x.id).collect()
+    }
+}
+
+impl Display for Sequence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "\"{}\" with cases {}",
+            &self.title.bold(),
+            self.list
+                .iter()
+                .map(|x| format!("\"{x}\""))
+                .collect::<Vec<String>>()
+                .join(", ")
+        )
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
-struct SequenceEntry {
+pub struct SequenceEntry {
     id: u32,
     title: String,
+}
+
+impl Display for SequenceEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", &self.title)
+    }
 }
 
 impl Display for TrialInformation {
@@ -69,6 +96,9 @@ pub(crate) struct Case {
 }
 
 impl Case {
+    pub(crate) fn id(&self) -> u32 {
+        self.trial_information.id
+    }
     pub(crate) async fn retrieve_from_id(case_id: u32) -> Result<Case> {
         let trial_script = reqwest::get(format!(
         "https://aaonline.fr/trial.js.php?trial_id={}",
