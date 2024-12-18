@@ -300,6 +300,39 @@ impl AssetDownloader {
         Ok(())
     }
 
+    fn download_psyche_locks(&mut self, site_data: &SiteData, name: &str, max_locks: u8) {
+        let mut file_value = Value::String(name.to_string());
+        self.collector.collect_download(
+            &mut file_value,
+            Some(site_data.site_paths.lock_path()),
+            Some(false),
+            Some("gif"),
+        );
+        let last = self.collector.collected.last().unwrap().as_ref();
+        // Now we need to create the softlinks to this file.
+        if let Ok(asset) = last {
+            let original_path = &asset.path;
+            let original_name = original_path.file_name().expect("must have file path");
+            for i in 1..=max_locks {
+                let new_path = original_path.with_file_name(format!("{name}_{i}.gif"));
+                if let Err(e) = Self::symlink(original_name, &new_path) {
+                    warn!("Could not create symbolic link: {e}. Copying file instead.")
+                }
+            }
+        }
+    }
+
+    // TODO: Use async version of file operations too.
+    #[cfg(unix)]
+    fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(orig: P, target: Q) -> Result<(), std::io::Error> {
+        std::os::unix::fs::symlink(orig, target)
+    }
+
+    #[cfg(windows)]
+    fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(orig: P, target: Q) -> Result<(), std::io::Error> {
+        std::os::windows::fs::symlink_file(orig, target)
+    }
+
     pub(crate) fn collect_case_data(
         &mut self,
         case: &mut Case,
@@ -311,6 +344,7 @@ impl AssetDownloader {
             .trial_data
             .as_object_mut()
             .context("Trial data must be an object")?;
+
         let cloned_profiles = data["profiles"].clone();
         let id_profiles: HashMap<i64, &str> = cloned_profiles
             .as_array()
@@ -570,6 +604,36 @@ impl AssetDownloader {
                     Some(false),
                     None,
                 );
+            }
+        }
+
+        // Finally, we need to download psyche-locks. For this, we first need to determine the
+        // maximum number of them.
+        let max_locks = data["scenes"]
+            .as_array()
+            .expect("scenes must be array")
+            .iter()
+            .filter_map(|x| x.as_object())
+            .flat_map(|x| x["dialogues"].as_array().expect("dialogues must be array"))
+            .filter_map(|x| x.as_object())
+            .map(|x| x["locks"].as_object().expect("locks must be object"))
+            .map(|x| {
+                x["locks_to_display"]
+                    .as_array()
+                    .expect("locks_to_display must be array")
+            })
+            .map(|x| x.len())
+            .max()
+            .unwrap_or(0) as u8;
+        if max_locks > 0 {
+            const LOCK_NAMES: [&str; 4] = [
+                "fg_chains_appear",
+                "jfa_lock_appears",
+                "jfa_lock_explodes",
+                "fg_chains_disappear",
+            ];
+            for lock in LOCK_NAMES {
+                self.download_psyche_locks(site_data, lock, max_locks);
             }
         }
 

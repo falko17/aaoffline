@@ -78,6 +78,12 @@ pub(crate) mod re {
 
     pub(crate) static GOOGLE_ANALYTICS_REGEX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"(?s)<script>.*?UA-.*?</script>"#).unwrap());
+
+    pub(crate) static PSYCHE_LOCK_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+        // This one may look even worse than the previous ones, but look, I used named capture
+        // groups this time! That's an improvement, right? ...Right?
+        Regex::new(r#"generateImageElement\((?P<path>cfg\.picture_dir\s*\+\s*cfg\.locks_subdir\s*\+\s*(?P<type>[^+]*?\s*\+\s*)?['"](?P<name>[^'"]*?)\.gif\?id=['"](?P<id>.*?))\);"#).unwrap()
+    });
 }
 
 pub(crate) const UPDATE_MESSAGE: &str =

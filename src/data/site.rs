@@ -123,6 +123,9 @@ impl SitePaths {
     pub(crate) fn voice_path(&self) -> Vec<&str> {
         vec![&self.voices_dir]
     }
+    pub(crate) fn lock_path(&self) -> Vec<&str> {
+        vec![&self.picture_dir, &self.locks_subdir]
+    }
 
     pub(crate) async fn retrieve_from_bridge() -> Result<Self> {
         // We only need to retrieve the bridge script because we need to know the configuration of

@@ -320,7 +320,10 @@ impl Player {
         let css_caps: Vec<_> = Self::regex_for_both(&re::CSS_REGEX, player, scripts);
         let style_caps: Vec<_> = Self::regex_for_both(&re::STYLE_INCLUDE_REGEX, player, scripts);
         let src_caps: Vec<_> = Self::regex_for_both(&re::SRC_REGEX, player, scripts);
-        pb.inc_length((css_caps.len() + style_caps.len() + src_caps.len() + 1) as u64);
+        let psy_caps: Vec<_> = Self::regex_for_both(&re::PSYCHE_LOCK_REGEX, player, scripts);
+        pb.inc_length(
+            (css_caps.len() + style_caps.len() + src_caps.len() + psy_caps.len() + 1) as u64,
+        );
 
         for (target, css) in css_caps {
             let whole = css.get(0).unwrap();
@@ -520,7 +523,30 @@ impl Player {
             );
         }
 
-        // FIXME: Replace psyche locks with (up to 10 per type) soft links.
+        // Psyche locks are slightly more tricky to replace. In the online version, a query
+        // parameter "?id=" is appended to the lock request, this is later used to differentiate
+        // individual lock images (even though the underyling image is the same). We cannot use
+        // query parameters like this for static HTML files.
+        // As a workaround, we'll copy (more precisely, softlink) each psyche lock file nine times
+        // (assuming there'll never be more than nine psyche locks at the same time).
+        if psy_caps.is_empty() {
+            warn!("Could not find psyche locks in scripts, skipping.");
+        } else {
+            for (target, lock) in psy_caps {
+                pb.inc(1);
+                let name = if lock.name("type").is_some() {
+                    &format!("jfa_lock{}", lock.name("name").unwrap().as_str())
+                } else {
+                    lock.name("name").unwrap().as_str()
+                };
+                let path = lock.name("path").unwrap();
+                let replacement = format!(
+                    "'assets/{name}_'{} + '.gif'",
+                    lock.name("id").unwrap().as_str()
+                );
+                replacements.push(PlayerTransformation::new(target, path.range(), replacement));
+            }
+        }
 
         // We disable preloading, it only leads to some errors (since we do not download all
         // default sprites) and we don't gain anything, since the assets are already local.

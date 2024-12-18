@@ -135,10 +135,9 @@ impl Args {
                 .parse()
                 .map_err(|_| "Case ID in given URL is not a valid number!".to_string())
         } else {
-            Err(
-                "Could not parse case ID from input {x}. Please provide a valid case URL or ID."
-                    .to_string(),
-            )
+            Err(format!(
+                "Could not parse case ID from input \"{case}\". Please provide a valid case URL or ID."
+            ))
         }
     }
 }
@@ -342,10 +341,15 @@ impl MainContext {
         let mut downloads: Vec<Result<_>> = vec![];
         for case in cases.iter_mut() {
             site_data.default_data.default_places = original_default_places.clone();
-            if multiple {
+            let output = if multiple {
                 // Case data needs to be put into the directory of that case.
-                handler.set_output(self.output.join(PathBuf::from(case.id().to_string())));
+                self.output.join(PathBuf::from(case.id().to_string()))
+            } else {
+                self.output.clone()
             };
+            // May need to create the directory first.
+            std::fs::create_dir_all(output.join("assets"))?;
+            handler.set_output(output);
             downloads.append(&mut handler.collect_case_data(case, site_data)?);
         }
         // Then, download all assets at once.
