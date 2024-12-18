@@ -124,6 +124,7 @@ struct Args {
 }
 
 impl Args {
+    /// Parses the given [case] into its ID.
     fn accept_case(case: &str) -> Result<u32, String> {
         if let Ok(id) = case.parse::<u32>() {
             Ok(id)
@@ -142,18 +143,27 @@ impl Args {
     }
 }
 
+/// The main context for the program.
 #[derive(Debug)]
 struct MainContext {
+    /// The parsed command line arguments.
     args: Args,
+    /// The output directory for the case.
     output: PathBuf,
+    /// Whether the output directory was empty before we started.
     output_was_empty: bool,
+    /// The IDs of the cases to download.
     case_ids: Vec<u32>,
+    /// The progress bar for the main step indicator.
     pb: indicatif::ProgressBar,
+    /// The multi-progress bar that may contain multiple progress bars.
     multi_progress: MultiProgress,
+    /// The player instance.
     player: Option<Player>,
 }
 
 impl MainContext {
+    /// Creates a new main context from the given [args].
     fn new(args: Args) -> Result<MainContext> {
         let case_ids = args.cases.clone();
 
@@ -179,6 +189,7 @@ impl MainContext {
         })
     }
 
+    /// Shows the current step with the given [text] and [step] number in the progress bar.
     fn show_step(&self, step: u8, text: &str) {
         self.pb
             .set_message(format!("{} {text}", format!("[{step}/7]").dimmed()));
@@ -187,24 +198,33 @@ impl MainContext {
         }
     }
 
+    /// Whether to hide the progress bar.
+    ///
+    /// This is the case if the log level is higher than info, since then the progress bar would
+    /// just interfere with the many log messages.
     fn should_hide_pb(args: &Args) -> bool {
         args.verbose.log_level().is_some_and(|x| x > Level::Info)
     }
 
+    /// Adds a new progress bar with the given [max] value.
     fn add_progress(&self, max: u64) -> ProgressBar {
         if Self::should_hide_pb(&self.args) {
-            // The progress bar would just be annoying together with that many log messages.
             ProgressBar::hidden()
         } else {
             self.multi_progress.add(ProgressBar::new(max))
         }
     }
 
+    /// Finishes the given progress bar with the given [msg].
     fn finish_progress(&self, pb: &ProgressBar, msg: impl Into<Cow<'static, str>>) {
         pb.finish_with_message(msg);
         self.multi_progress.remove(pb);
     }
 
+    /// Removes all data in the output directory.
+    ///
+    /// If [only_ours] is true, the directory will only be removed if it was empty before we started.
+    /// For multiple cases, only the individual case directories will be removed.
     fn cleanup_data(&self, only_ours: bool) {
         assert_ne!(self.output, PathBuf::from("/"), "We will not remove /!");
         if self.case_ids.len() == 1 {
@@ -255,10 +275,12 @@ impl MainContext {
         }
     }
 
+    /// Cleans up the data if the given [res] is an error, otherwise does nothing.
     fn clean_on_fail(&self, res: Result<()>) -> Result<()> {
         res.inspect_err(|_| self.cleanup_data(true))
     }
 
+    /// Retrieves the case information for all cases and possibly their sequences.
     async fn retrieve_case_infos(&mut self) -> Result<Vec<Case>> {
         let mut cases: Vec<_> = Self::download_case_infos_no_sequence(&self.case_ids).await?;
         cases.append(
@@ -273,6 +295,7 @@ impl MainContext {
         Ok(cases)
     }
 
+    /// Downloads the case information for the given [ids], without downloading the sequences.
     async fn download_case_infos_no_sequence(ids: &[u32]) -> Result<Vec<Case>> {
         future::join_all(ids.iter().map(|x| Case::retrieve_from_id(*x)))
             .await
@@ -280,9 +303,12 @@ impl MainContext {
             .collect()
     }
 
+    /// Retrieves additional cases that should be downloaded if the given [case] is part of a sequence.
+    ///
+    /// This is dependent on the value of the `sequence` field in the arguments.
     fn additional_cases(&mut self, case: &Case) -> Vec<u32> {
         // Check if the user wants to download the whole sequence this case is contained in.
-        if let Some(sequence) = case.trial_information.sequence.as_ref() {
+        if let Some(sequence) = case.case_information.sequence.as_ref() {
             debug!("Sequence detected: {sequence}");
             if match self.args.sequence {
                 DownloadSequence::Every => true,
@@ -296,6 +322,7 @@ impl MainContext {
         vec![]
     }
 
+    /// Asks the user whether they want to download the whole sequence.
     fn ask_sequence(&self, case: &Case, sequence: &Sequence) -> bool {
         if !std::io::stdin().is_terminal() {
             debug!("stdin is not a terminal, not asking whether to download sequence.");
@@ -304,7 +331,7 @@ impl MainContext {
             let result = self.pb.suspend(|| {
                 println!(
                     "The case \"{}\" is part of a sequence: {sequence}.",
-                    case.trial_information.title
+                    case.case_information.title
                 );
                 let result = dialoguer::Confirm::new()
                     .with_prompt("Do you want to download the other cases in this sequence too?")
@@ -323,11 +350,13 @@ impl MainContext {
         }
     }
 
+    /// Retrieves the site configuration for Ace Attorney Online.
     async fn retrieve_site_config(&mut self) -> Result<()> {
         self.player = Some(Player::new(self.args.clone()).await?);
         Ok(())
     }
 
+    /// Downloads the case data for the given [cases].
     async fn download_case_data(&mut self, cases: &mut [Case]) -> Result<()> {
         let pb = self.add_progress(0);
         let player = self.player.as_mut().unwrap();
@@ -358,11 +387,13 @@ impl MainContext {
         self.clean_on_fail(result)
     }
 
+    /// Retrieves the player for cases.
     async fn retrieve_player(&mut self) -> Result<()> {
         let result = self.player.as_mut().unwrap().retrieve_player().await;
         self.clean_on_fail(result)
     }
 
+    /// Retrieves the scripts (i.e., JavaScript modules) for the player.
     async fn retrieve_player_scripts(&mut self) -> Result<()> {
         let pb = self.add_progress(0);
         let result = self.player.as_mut().unwrap().retrieve_scripts(&pb).await;
@@ -370,11 +401,16 @@ impl MainContext {
         self.clean_on_fail(result)
     }
 
+    /// Transforms the player blocks for the given [case] to point to offline assets.
     fn transform_player_blocks(&mut self, case: &Case) -> Result<()> {
         let result = self.player.as_mut().unwrap().transform_player(case);
         self.clean_on_fail(result)
     }
 
+    /// Retrieves additional sources for the player.
+    ///
+    /// This includes things like the CSS and JavaScript sources that are not
+    /// part of the player itself and only referenced in the source code.
     async fn retrieve_player_sources(&mut self) -> Result<()> {
         let pb = self.add_progress(0);
         let result = self
@@ -387,6 +423,7 @@ impl MainContext {
         self.clean_on_fail(result)
     }
 
+    /// Output the finished player for the case to [output_path].
     fn output_player(&self, output_path: &Path) -> Result<()> {
         let output = output_path.join("index.html");
         std::fs::create_dir_all(output.parent().unwrap())?;
@@ -479,7 +516,7 @@ async fn main() -> Result<()> {
             7,
             &format!(
                 "Writing case \"{}\" to disk...",
-                case.trial_information.title
+                case.case_information.title
             ),
         );
         ctx.player = Some(original_player.clone());

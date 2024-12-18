@@ -1,5 +1,7 @@
 //! Contains constants, such as regular expressions or strings.
 
+use const_format::formatcp;
+
 /// Regular expressions used by this crate.
 pub(crate) mod re {
     use std::sync::LazyLock;
@@ -86,10 +88,12 @@ pub(crate) mod re {
     });
 }
 
+pub(crate) const AAONLINE_BASE: &str = "https://aaonline.fr";
+
 pub(crate) const UPDATE_MESSAGE: &str =
     "This means a new player has been released and the script needs to be updated.";
 
-pub(crate) const BRIDGE_URL: &str = "https://aaonline.fr/bridge.js.php";
+pub(crate) const BRIDGE_URL: &str = formatcp!("{AAONLINE_BASE}/bridge.js.php");
 
 pub(crate) const BITBUCKET_URL: &str =
     "https://bitbucket.org/AceAttorneyOnline/aao-game-creation-engine/raw/";

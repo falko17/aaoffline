@@ -13,15 +13,21 @@ pub(crate) mod php {
     use crate::data::case::Case;
     use crate::data::player::Player;
 
-    /// A matched <?php ... ?> block within the player.
+    type BlockTransformer = fn(&Player, &Case) -> Result<String>;
+
+    /// A matched `<?php ... ?>` block within the player.
     #[derive(Clone, Debug)]
     struct FoundPhpBlock {
+        /// The start byte offset of the block.
         start: usize,
+        /// The end byte offset of the block.
         end: usize,
+        /// The replacement text for this block.
         replaced: Option<String>,
     }
 
     impl FoundPhpBlock {
+        /// Creates a new `FoundPhpBlock` with the given [start] and [end] byte offsets.
         fn new(start: usize, end: usize) -> FoundPhpBlock {
             FoundPhpBlock {
                 start,
@@ -29,6 +35,9 @@ pub(crate) mod php {
                 replaced: None,
             }
         }
+
+        /// Creates a new `FoundPhpBlock` with the given [start] and [end] byte offsets
+        /// that was not expected and will thus simply be removed.
         fn new_unexpected(start: usize, end: usize) -> FoundPhpBlock {
             FoundPhpBlock {
                 start,
@@ -38,47 +47,21 @@ pub(crate) mod php {
         }
     }
 
-    /// An expected <?php ... ?> block within the player.
+    /// An expected `<?php ... ?>` block within the player.
     #[derive(Debug)]
     struct ExpectedPhpBlock {
         /// A human-readable ID for this block to uniquely identify it.
         id: &'static str,
+        /// The expected byte range of this PHP block.
         range: Option<Range<usize>>,
         /// A regex to detect this PHP block.
         detector: LazyLock<Regex>,
         /// A function with which the contents of this PHP block can be transformed.
-        replacer: Option<fn(&Player, &Case) -> Result<String>>,
+        replacer: Option<BlockTransformer>,
     }
 
     impl ExpectedPhpBlock {
-        fn expect_match(&self, other: &FoundPhpBlock) {
-            if let Some(Range { start, end }) = self.range {
-                if (other.start, other.end) != (start, end) {
-                    warn!(
-                    "Expected PHP block {} to be at character range ({start}–{end}), but was at ({}–{}). {UPDATE_MESSAGE}",
-                    self.id, other.start, other.end
-                );
-                }
-            }
-        }
-
-        fn replace(&self, player_scripts: &Player, case: &Case) -> Result<String> {
-            if let Some(replacer) = self.replacer {
-                replacer(player_scripts, case)
-            } else {
-                Ok(String::new())
-            }
-        }
-
-        fn matches(&self, text: &str) -> bool {
-            trace!(
-                "Matching PHP block {} with {} to {text}...",
-                self.id,
-                self.detector.to_string()
-            );
-            self.detector.is_match(text)
-        }
-
+        /// Creates a new `ExpectedPhpBlock` out of the given arguments.
         const fn new(
             id: &'static str,
             start: usize,
@@ -94,6 +77,40 @@ pub(crate) mod php {
             }
         }
 
+        /// Outputs a warning if the expected byte range of this block does not match the actual range
+        /// of the given [other] block.
+        fn expect_match(&self, other: &FoundPhpBlock) {
+            if let Some(Range { start, end }) = self.range {
+                if (other.start, other.end) != (start, end) {
+                    warn!(
+                    "Expected PHP block {} to be at character range ({start}–{end}), but was at ({}–{}). {UPDATE_MESSAGE}",
+                    self.id, other.start, other.end
+                );
+                }
+            }
+        }
+
+        /// Runs the replacer function for this block, if it exists, returning the transformed contents.
+        fn replace(&self, player_scripts: &Player, case: &Case) -> Result<String> {
+            if let Some(replacer) = self.replacer {
+                replacer(player_scripts, case)
+            } else {
+                Ok(String::new())
+            }
+        }
+
+        /// Checks if the given [text] matches the detector regex for this block.
+        fn matches(&self, text: &str) -> bool {
+            trace!(
+                "Matching PHP block {} with {} to {text}...",
+                self.id,
+                self.detector.to_string()
+            );
+            self.detector.is_match(text)
+        }
+
+        /// Creates a new `ExpectedPhpBlock` without a specific range, meaning that it will accept
+        /// any range without outputting a warning.
         const fn new_rangeless(
             id: &'static str,
             detector: LazyLock<Regex>,
@@ -108,6 +125,7 @@ pub(crate) mod php {
         }
     }
 
+    /// Transforms the given [source] string by replacing PHP blocks that match the given [blocks].
     fn transform_blocks(
         player: &Player,
         case: &Case,
@@ -180,6 +198,7 @@ pub(crate) mod php {
         Ok(())
     }
 
+    /// Transforms the blocks within the given [source] string (that's assumed to be `trial.js.php`).
     pub(crate) fn transform_trial_blocks(
         player: &Player,
         case: &Case,
@@ -201,6 +220,7 @@ pub(crate) mod php {
         transform_blocks(player, case, source, &EXPECTED_TRIAL_BLOCKS)
     }
 
+    /// Transforms the blocks within the given [source] string (that's assumed to be `player.php`).
     pub(crate) fn transform_player_blocks(player: &mut Player, case: &Case) -> Result<()> {
         static EXPECTED_PLAYER_BLOCKS: [ExpectedPhpBlock; 5] = [
             ExpectedPhpBlock::new(
@@ -239,12 +259,12 @@ pub(crate) mod php {
                 LazyLock::new(|| {
                     Regex::new(r"echo 'Ace Attorney Online - Trial Player \(Loading\)';").unwrap()
                 }),
-                Some(|_, case| Ok(case.trial_information.title.clone())),
+                Some(|_, case| Ok(case.case_information.title.clone())),
             ),
             ExpectedPhpBlock::new_rangeless(
                 "heading",
                 LazyLock::new(|| Regex::new(r"echo 'Loading trial \.\.\.';").unwrap()),
-                Some(|_, case| Ok(case.trial_information.title.clone())),
+                Some(|_, case| Ok(case.case_information.title.clone())),
             ),
         ];
 

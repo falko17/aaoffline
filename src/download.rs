@@ -1,4 +1,4 @@
-//! Contains functions and methods for downloading case data.
+//! Contains data structures and methods for downloading case data.
 
 use anyhow::{anyhow, Context, Result};
 use base64::prelude::BASE64_STANDARD;
@@ -14,11 +14,12 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
+use crate::constants::AAONLINE_BASE;
 use crate::data::case::Case;
 use crate::data::site::SiteData;
 use crate::{Args, HttpHandling};
 
-// Returns output file path and file content.
+/// Downloads a file from the given [url] and returns the output path and file content.
 pub(crate) async fn download_url(
     url: &str,
     http_handling: &HttpHandling,
@@ -37,7 +38,7 @@ pub(crate) async fn download_url(
         url.to_string()
     } else {
         // Assume this is a relative URL.
-        format!("https://aaonline.fr/{}", url.trim_start_matches('/'))
+        format!("{AAONLINE_BASE}/{}", url.trim_start_matches('/'))
     };
 
     // Then, download the file as bytes (since it may be binary).
@@ -53,7 +54,8 @@ pub(crate) async fn download_url(
     Ok((output, content))
 }
 
-pub(crate) fn make_data_url(data: &Bytes) -> Result<String> {
+/// Converts the given [data] to a base64 data URI.
+pub(crate) fn make_data_uri(data: &Bytes) -> Result<String> {
     let mime = infer::get(data)
         .context("Encountered data with unknown MIME type")?
         .mime_type();
@@ -63,27 +65,39 @@ pub(crate) fn make_data_url(data: &Bytes) -> Result<String> {
     ))
 }
 
+/// An asset download request.
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
 pub(crate) struct AssetDownload {
+    /// The URL to download from.
     url: String,
+    /// The path to save the downloaded file to.
     path: PathBuf,
+    /// Whether to ignore inaccessible assets.
     ignore_inaccessible: bool,
 }
 
+/// A downloader for case assets.
 #[derive(Debug)]
 pub(crate) struct AssetDownloader {
+    /// The downloader's arguments.
     args: Args,
+    /// The collector that will remember our asset download requests.
     collector: AssetCollector,
 }
 
+/// Collects asset downloads and assigns unique filenames to them.
 #[derive(Debug)]
 struct AssetCollector {
+    /// The collected (possibly faulty) asset downloads.
     collected: Vec<Result<AssetDownload>>,
+    /// The default icon URL.
     default_icon_url: String,
+    /// The output directory for the assets.
     output: PathBuf,
 }
 
 impl AssetCollector {
+    /// Creates a new asset collector.
     fn new(default_icon_url: String, output: PathBuf) -> AssetCollector {
         AssetCollector {
             collected: vec![],
@@ -92,18 +106,21 @@ impl AssetCollector {
         }
     }
 
+    /// Hashes the given [value] to a u64.
     fn hash(value: &str) -> u64 {
         let mut hasher = DefaultHasher::new();
         value.hash(&mut hasher);
         hasher.finish()
     }
 
+    /// Checks whether a [path] exists already in the collected downloads.
     fn path_exists(&self, path: &PathBuf) -> bool {
         self.collected
             .iter()
             .any(|x| x.as_ref().ok().map_or(false, |x| x.path == *path))
     }
 
+    /// Creates a new unique path for the given [url] and [path].
     fn new_path(&self, url: &str, path: &Path) -> PathBuf {
         let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("bin");
         let name = path.file_stem().unwrap_or(path.as_os_str());
@@ -123,6 +140,7 @@ impl AssetCollector {
         }
     }
 
+    /// Returns the target path for the given [url] and [file].
     fn get_path(&self, url: &str, file: &Path) -> PathBuf {
         // If we have an existing download for this URL, we need to use the same filename here.
         self.collected
@@ -132,6 +150,17 @@ impl AssetCollector {
             .map_or_else(|| self.new_path(url, file), |x| x.path.clone())
     }
 
+    /// Creates a new asset download request.
+    ///
+    /// The [`file_value`] will be replaced with the new path[^1]. The given [`path_components`]
+    /// will be put in front of the URL, and the [`external`] flag will determine whether the URL
+    /// is hosted on Ace Attorney Online or externally. The [`default_extension`] will be applied
+    /// if the given [`file_value`] has no extension. If a [`filename`] is given, it will be used
+    /// (or try to be used, as long as it hasn't been used yet) as the filename for the asset.
+    ///
+    /// [^1]: Note that this will be the "case-local" path to the asset, which is distinct from the
+    /// "case-global" path to the asset where it will be saved relative to the current directory.
+    /// The "case-local" path should, for example, always start with "assets/".
     fn make_download(
         &self,
         file_value: &mut Value,
@@ -150,7 +179,7 @@ impl AssetCollector {
         let file_string = file.to_str().expect("Invalid path encountered");
         let url = if !external.unwrap_or(true) {
             &format!(
-                "https://aaonline.fr/{}/{file_string}",
+                "{AAONLINE_BASE}/{}/{file_string}",
                 path_components
                     .context("Non-external path needs path components!")?
                     .join("/"),
@@ -158,7 +187,7 @@ impl AssetCollector {
         } else if file_string.starts_with("http") {
             file_string
         } else {
-            &format!("https://aaonline.fr/{file_string}")
+            &format!("{AAONLINE_BASE}/{file_string}")
         };
         let path = self.get_path(url, filename.unwrap_or(&file));
         if filename.is_some_and(|x| !path.ends_with(x)) {
@@ -190,6 +219,7 @@ impl AssetCollector {
         })
     }
 
+    /// Collects a download request for the given [`file_value`].
     fn collect_download(
         &mut self,
         file_value: &mut Value,
@@ -207,6 +237,8 @@ impl AssetCollector {
         ))
     }
 
+    /// Collects a download request for the given [`file_value`], using the given [`name`] as a
+    /// filename.
     fn collect_download_with_name(
         &mut self,
         file_value: &mut Value,
@@ -225,6 +257,10 @@ impl AssetCollector {
         ))
     }
 
+    /// Returns the unique downloads that have been collected.
+    ///
+    /// Note that uniqueness in this context is determined by the *combination*
+    /// of filename and URL.
     fn get_unique_downloads(&mut self) -> Vec<Result<AssetDownload>> {
         let mut encountered_downloads: HashSet<AssetDownload> = HashSet::new();
         self.collected
@@ -239,6 +275,9 @@ impl AssetCollector {
 }
 
 impl AssetDownloader {
+    /// Creates a new asset downloader.
+    ///
+    /// The [`site_data`] is used to determine the default icon path.
     pub(crate) fn new(args: Args, output: PathBuf, site_data: &SiteData) -> AssetDownloader {
         let default_icon_path = site_data.site_paths.default_icon();
         AssetDownloader {
@@ -247,11 +286,12 @@ impl AssetDownloader {
         }
     }
 
+    /// Sets the output directory for the collected assets.
     pub(crate) fn set_output(&mut self, output: PathBuf) {
         self.collector.output = output;
     }
 
-    // Downloads URLs in parallel with the configured number of concurrent downloads.
+    /// Downloads the given [assets] **in parallel** with the configured number of concurrent downloads.
     async fn download_assets(
         &self,
         assets: Vec<AssetDownload>,
@@ -274,13 +314,14 @@ impl AssetDownloader {
             .await
     }
 
+    /// Downloads the given [asset] and writes it to its set path, returning that path.
     async fn download_asset(&self, asset: &AssetDownload) -> Result<PathBuf> {
         let (_, content) = download_url(&asset.url, &self.args.http_handling).await?;
-        self.write_asset(&asset.path, &content)
-            .map(|_| asset.path.clone())
+        Self::write_asset(&asset.path, &content).map(|_| asset.path.clone())
     }
 
-    fn write_asset(&self, path: &PathBuf, content: &[u8]) -> Result<()> {
+    /// Writes the given [content] to the given [path].
+    fn write_asset(path: &PathBuf, content: &[u8]) -> Result<()> {
         // Write to file. We may need to create the containing directories first.
         debug!("Writing {}...", path.display());
         let dir = path.parent().expect("no parent directory in path");
@@ -300,6 +341,11 @@ impl AssetDownloader {
         Ok(())
     }
 
+    /// Downloads the psyche lock file with the given [name], assuming a maximum number of
+    /// [`max_locks`] for the case.
+    ///
+    /// This will attempt to create symbolic links for the psyche lock files, but will fall back to
+    /// using copies if symbolic links are not supported. Panics if that also doesn't work.
     fn download_psyche_locks(&mut self, site_data: &SiteData, name: &str, max_locks: u8) {
         let mut file_value = Value::String(name.to_string());
         self.collector.collect_download(
@@ -309,30 +355,38 @@ impl AssetDownloader {
             Some("gif"),
         );
         let last = self.collector.collected.last().unwrap().as_ref();
-        // Now we need to create the softlinks to this file.
+        // Now we need to create the symbolic links to this file.
         if let Ok(asset) = last {
             let original_path = &asset.path;
             let original_name = original_path.file_name().expect("must have file path");
             for i in 1..=max_locks {
                 let new_path = original_path.with_file_name(format!("{name}_{i}.gif"));
                 if let Err(e) = Self::symlink(original_name, &new_path) {
-                    warn!("Could not create symbolic link: {e}. Copying file instead.")
+                    warn!("Could not create symbolic link: {e}. Copying file instead.");
+                    std::fs::copy(original_path, &new_path).expect("Could not copy file");
                 }
             }
         }
     }
 
     // TODO: Use async version of file operations too.
+
+    /// Creates a symbolic link from the given [orig] to the given [target].
     #[cfg(unix)]
     fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(orig: P, target: Q) -> Result<(), std::io::Error> {
         std::os::unix::fs::symlink(orig, target)
     }
 
+    /// Creates a symbolic link from the given [orig] to the given [target].
     #[cfg(windows)]
     fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(orig: P, target: Q) -> Result<(), std::io::Error> {
         std::os::windows::fs::symlink_file(orig, target)
     }
 
+    /// Collects the case asset download requests for the given [case] and [site_data], returning
+    /// the (possibly faulty) requests in a vector.
+    ///
+    /// *Note: This does not start the downloads yet!*
     pub(crate) fn collect_case_data(
         &mut self,
         case: &mut Case,
@@ -341,7 +395,7 @@ impl AssetDownloader {
         let paths = &site_data.site_paths;
         let used_sprites = case.get_used_sprites();
         let data = case
-            .trial_data
+            .case_data
             .as_object_mut()
             .context("Trial data must be an object")?;
 
@@ -640,6 +694,7 @@ impl AssetDownloader {
         Ok(self.collector.get_unique_downloads())
     }
 
+    /// Downloads the given collected (possibly faulty) [downloads] in parallel.
     pub(crate) async fn download_collected(
         &mut self,
         pb: &ProgressBar,

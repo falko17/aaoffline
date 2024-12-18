@@ -8,8 +8,9 @@ use log::trace;
 use regex::Regex;
 use serde::de::DeserializeOwned;
 
+/// Error that occurs when a regex does not match the input text.
 #[derive(Debug)]
-struct RegexNotMatched;
+pub(crate) struct RegexNotMatched;
 
 impl Display for RegexNotMatched {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -19,6 +20,7 @@ impl Display for RegexNotMatched {
 
 impl Error for RegexNotMatched {}
 
+/// Extracts a JSON value of type [T] from the given [text] using the given [regex].
 fn retrieve_escaped_json<T: DeserializeOwned>(regex: &Regex, text: &str) -> Result<T> {
     let extracted = regex
         .captures(text)
