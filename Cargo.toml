@@ -41,3 +41,10 @@ strip = true
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 too_many_lines = "allow"
+
+[dev-dependencies]
+assert_cmd = "2.0.16"
+headless_chrome = "1.0.15"
+rstest = "0.23.0"
+rstest_reuse = "0.7.0"
+tempfile = "3.14.0"
