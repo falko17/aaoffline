@@ -28,10 +28,10 @@ pub(crate) mod re {
     });
 
     pub(crate) static DEFAULT_PLACES_REGEX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"(?s)var default_places = (\{.*?\});"#).unwrap());
+        LazyLock::new(|| Regex::new(r"(?s)var default_places = (\{.*?\});").unwrap());
 
     pub(crate) static CONFIG_REGEX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"(?s)var cfg = (\{.*?\});"#).unwrap());
+        LazyLock::new(|| Regex::new(r"(?s)var cfg = (\{.*?\});").unwrap());
 
     pub(crate) static MODULE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         // I'm sorry for the mess below. As qntm succinctly put it, the plural of regex is regrets.
@@ -46,12 +46,12 @@ pub(crate) mod re {
         LazyLock::new(|| Regex::new(r#"includeStyle\(['"](.*?)['"]\);"#).unwrap());
 
     pub(crate) static LANGUAGE_INCLUDE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?s)Languages\.requestFiles\(\[([^\]]*)\], function\(\)\{\s*(.*?)\s*\}\);"#)
+        Regex::new(r"(?s)Languages\.requestFiles\(\[([^\]]*)\], function\(\)\{\s*(.*?)\s*\}\);")
             .unwrap()
     });
 
     pub(crate) static LANGUAGE_REGEX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"var lang = new Object\(\);"#).unwrap());
+        LazyLock::new(|| Regex::new(r"var lang = new Object\(\);").unwrap());
 
     pub(crate) static CSS_SRC_REGEX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"[:\s]url\("?([^")]*)"?\)"#).unwrap());
@@ -79,7 +79,7 @@ pub(crate) mod re {
         LazyLock::new(|| Regex::new(r"translateNode\(images_loading_label\);").unwrap());
 
     pub(crate) static GOOGLE_ANALYTICS_REGEX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"(?s)<script>.*?UA-.*?</script>"#).unwrap());
+        LazyLock::new(|| Regex::new(r"(?s)<script>.*?UA-.*?</script>").unwrap());
 
     pub(crate) static PSYCHE_LOCK_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         // This one may look even worse than the previous ones, but look, I used named capture

@@ -268,9 +268,9 @@ pub(crate) mod php {
             ),
         ];
 
-        let mut playertext = player.player.as_mut().unwrap().clone();
+        let mut playertext = player.content.as_mut().unwrap().clone();
         transform_blocks(player, case, &mut playertext, &EXPECTED_PLAYER_BLOCKS)?;
-        player.player = Some(playertext);
+        player.content = Some(playertext);
         Ok(())
     }
 }

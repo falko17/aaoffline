@@ -124,11 +124,10 @@ impl Case {
         self.case_information.id
     }
 
-    /// Retrieves a case using the given [case_id] from Ace Attorney Online.
+    /// Retrieves a case using the given [`case_id`] from Ace Attorney Online.
     pub(crate) async fn retrieve_from_id(case_id: u32) -> Result<Case> {
         let case_script = reqwest::get(format!(
-        "{AAONLINE_BASE}/trial.js.php?trial_id={}",
-        case_id
+        "{AAONLINE_BASE}/trial.js.php?trial_id={case_id}",
     )).await
     .context(
         formatcp!("Could not download case data from {AAONLINE_BASE}. Please check your internet connection.")

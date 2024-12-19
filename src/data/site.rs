@@ -59,6 +59,7 @@ impl DefaultData {
 }
 
 /// Paths to various directories on the Ace Attorney Online server.
+#[allow(clippy::unsafe_derive_deserialize)] // Not sure where the unsafe part here is, even.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct SitePaths {
     bg_subdir: String,
@@ -151,20 +152,22 @@ impl SitePaths {
     pub(crate) async fn retrieve_from_bridge() -> Result<Self> {
         // We only need to retrieve the bridge script because we need to know the configuration of
         // aaonline.fr. We don't need it for the JS module system, as we'll handle that manually.
+        // TODO: Use only one client.
         let bridge = reqwest::get(BRIDGE_URL).await
-    .context(
-        "Could not download site configuration from {AAONLINE_BASE}. Please check your internet connection."
-    )?
-    .error_for_status()
-    .context(formatcp!("{AAONLINE_BASE} site configuration seems to be inaccessible."))?
-    .text().await?;
-        trace!("{}", bridge);
+            .context(
+                "Could not download site configuration from {AAONLINE_BASE}. Please check your internet connection."
+            )?
+            .error_for_status()
+            .context(formatcp!("{AAONLINE_BASE} site configuration seems to be inaccessible."))?
+            .text().await?;
+
+        trace!("{bridge}");
         let config_text = re::CONFIG_REGEX
-    .captures(&bridge)
-    .context("Bridge script seemingly changed format, this means the script needs to be updated to work with the newest AAO version.")?
-    .get(1)
-    .expect("No captured content in site configuration")
-    .as_str();
+            .captures(&bridge)
+            .context("Bridge script seemingly changed format, this means the script needs to be updated to work with the newest AAO version.")?
+            .get(1)
+            .expect("No captured content in site configuration")
+            .as_str();
         trace!("{}", config_text);
         let config: Self = serde_json::from_str(config_text)
             .context("Could not parse site configuration. The script needs to be updated.")?;
@@ -184,7 +187,7 @@ pub(crate) struct SiteData {
 }
 
 impl SiteData {
-    /// Initializes the site data from the Ace Attorney Online server, using the given [default_mod]
+    /// Initializes the site data from the Ace Attorney Online server, using the given [`default_mod`]
     /// as the default module.
     pub(crate) async fn from_site_data(default_mod: &str) -> Result<Self> {
         let site_paths = SitePaths::retrieve_from_bridge().await?;

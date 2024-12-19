@@ -1,7 +1,11 @@
-mod constants;
-mod data;
-mod download;
-mod transform;
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+//! A downloader for Ace Attorney Online cases that allows them to be played offline.
+
+pub(crate) mod constants;
+pub(crate) mod data;
+pub(crate) mod download;
+pub(crate) mod transform;
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
@@ -164,7 +168,7 @@ struct MainContext {
 
 impl MainContext {
     /// Creates a new main context from the given [args].
-    fn new(args: Args) -> Result<MainContext> {
+    fn new(args: Args) -> MainContext {
         let case_ids = args.cases.clone();
 
         let output = args.output.clone().unwrap_or_else(|| {
@@ -178,7 +182,7 @@ impl MainContext {
         });
         let output_was_empty = !std::fs::read_dir(&output).is_ok_and(|mut x| x.next().is_some());
         let multi_progress = MultiProgress::new();
-        Ok(MainContext {
+        MainContext {
             args,
             case_ids,
             output,
@@ -186,7 +190,7 @@ impl MainContext {
             pb: multi_progress.add(ProgressBar::new_spinner()),
             multi_progress,
             player: None,
-        })
+        }
     }
 
     /// Shows the current step with the given [text] and [step] number in the progress bar.
@@ -223,7 +227,7 @@ impl MainContext {
 
     /// Removes all data in the output directory.
     ///
-    /// If [only_ours] is true, the directory will only be removed if it was empty before we started.
+    /// If [`only_ours`] is true, the directory will only be removed if it was empty before we started.
     /// For multiple cases, only the individual case directories will be removed.
     fn cleanup_data(&self, only_ours: bool) {
         assert_ne!(self.output, PathBuf::from("/"), "We will not remove /!");
@@ -324,10 +328,7 @@ impl MainContext {
 
     /// Asks the user whether they want to download the whole sequence.
     fn ask_sequence(&self, case: &Case, sequence: &Sequence) -> bool {
-        if !std::io::stdin().is_terminal() {
-            debug!("stdin is not a terminal, not asking whether to download sequence.");
-            false
-        } else {
+        if std::io::stdin().is_terminal() {
             let result = self.pb.suspend(|| {
                 println!(
                     "The case \"{}\" is part of a sequence: {sequence}.",
@@ -347,6 +348,9 @@ impl MainContext {
                 info!("Cancelling download per user request.");
                 std::process::exit(exitcode::OK)
             }
+        } else {
+            debug!("stdin is not a terminal, not asking whether to download sequence.");
+            false
         }
     }
 
@@ -423,13 +427,13 @@ impl MainContext {
         self.clean_on_fail(result)
     }
 
-    /// Output the finished player for the case to [output_path].
+    /// Output the finished player for the case to [`output_path`].
     fn output_player(&self, output_path: &Path) -> Result<()> {
         let output = output_path.join("index.html");
         std::fs::create_dir_all(output.parent().unwrap())?;
         std::fs::write(
             &output,
-            self.player.as_ref().unwrap().player.as_ref().unwrap(),
+            self.player.as_ref().unwrap().content.as_ref().unwrap(),
         )
         .with_context(|| {
             format!(
@@ -449,7 +453,7 @@ async fn main() -> Result<()> {
         .format_timestamp(None)
         .filter_level(args.verbose.log_level_filter())
         .init();
-    let mut ctx = MainContext::new(args)?;
+    let mut ctx = MainContext::new(args);
 
     if ctx.output.exists() {
         if ctx.args.remove_existing {
@@ -478,7 +482,7 @@ async fn main() -> Result<()> {
     info!(
         "Case{} identified as: {}",
         if only_one { "" } else { "s" },
-        cases.iter().map(|x| x.to_string()).join(", ")
+        cases.iter().map(ToString::to_string).join(", ")
     );
     ctx.pb = ctx
         .multi_progress

@@ -22,7 +22,7 @@ use super::site::SiteData;
 
 /// Merges two JSON objects into one.
 ///
-/// Code adapted from https://stackoverflow.com/a/54118457.
+/// Code adapted from <https://stackoverflow.com/a/54118457>.
 fn merge(a: &mut Value, b: Value) {
     if let Value::Object(a) = a {
         if let Value::Object(b) = b {
@@ -63,7 +63,6 @@ enum TransformationTarget {
 }
 
 /// A transformation to be applied to the player or its scripts.
-#[derive(Debug)]
 struct PlayerTransformation {
     /// The target of the transformation.
     target: TransformationTarget,
@@ -131,7 +130,7 @@ impl PlayerScripts {
 
         let mut text = Self::retrieve_js_text(name, &self.args.player_version).await?;
         if let Some(x) = pb {
-            x.inc(1)
+            x.inc(1);
         }
 
         module_transformer(player, name, &mut text)?;
@@ -142,7 +141,7 @@ impl PlayerScripts {
         let mod_content = captures.get(0).unwrap();
         let mod_name = captures.get(1).unwrap().as_str();
         assert_eq!(name, mod_name);
-        let dep_text = captures.get(2).unwrap().as_str().replace("'", "\"");
+        let dep_text = captures.get(2).unwrap().as_str().replace('\'', "\"");
         let dep_value =
             serde_json::from_str::<Value>(&dep_text).context("Could not parse dependency array")?;
         let deps: Vec<&str> = dep_value
@@ -234,8 +233,8 @@ pub(crate) struct Player {
     pub(crate) site_data: SiteData,
     /// The arguments to the command-line invocation of this script.
     pub(crate) args: Args,
-    /// The player code.
-    pub(crate) player: Option<String>,
+    /// The player's code.
+    pub(crate) content: Option<String>,
     /// The scripts used by the player.
     pub(crate) scripts: Option<PlayerScripts>,
 }
@@ -250,7 +249,7 @@ impl Player {
             site_data,
             args: args.clone(),
             scripts: None,
-            player: None,
+            content: None,
         };
         player.scripts = Some(PlayerScripts {
             scripts: Some(default_text),
@@ -288,7 +287,7 @@ impl Player {
         trace!("Player: {player}");
 
         player.insert(0, '\n');
-        self.player = Some(player);
+        self.content = Some(player);
         Ok(())
     }
 
@@ -336,8 +335,10 @@ impl Player {
     /// Retrieves the player's miscellaneous external sources (e.g., sources mentioned in CSS URLs)
     /// and transforms them to work offline.
     pub(crate) async fn retrieve_player_misc_sources(&mut self, pb: &ProgressBar) -> Result<()> {
+        const PRELOAD: &str = "preload: true";
+
         let mut replacements: Vec<PlayerTransformation> = Vec::new();
-        let player = self.player.as_ref().unwrap();
+        let player = self.content.as_ref().unwrap();
         let scripts = self.scripts.as_ref().unwrap().scripts.as_ref().unwrap();
         // We need to remove the Google Analytics tag at the bottom of the page.
         if let Some(m) = re::GOOGLE_ANALYTICS_REGEX.find(player) {
@@ -414,7 +415,7 @@ impl Player {
         let callback = lang.get(2).unwrap();
         trace!("{}", &group.as_str());
         let lang_files =
-            serde_json::from_str::<Value>(&format!("[{}]", &group.as_str().replace("'", "\"")))?;
+            serde_json::from_str::<Value>(&format!("[{}]", &group.as_str().replace('\'', "\"")))?;
         let lang_files: Vec<_> = lang_files
             .as_array()
             .context("languages must be array")?
@@ -457,6 +458,7 @@ impl Player {
             String::new(),
         ));
         // ...then we add the callback code as a normal block directly below.
+        #[allow(clippy::range_plus_one)] // We only accept Ranges, not inclusive ones.
         replacements.push(PlayerTransformation::new(
             TransformationTarget::Scripts,
             func_end..func_end + 1,
@@ -509,7 +511,6 @@ impl Player {
                 ));
                 // We need to use the HTML5 audio option for Howler, or we'll run into CORS errors.
                 // (See #1 for why some users might still want to disable HTML5 audios.)
-                const PRELOAD: &str = "preload: true";
                 let preload_pos = scripts
                     .find(PRELOAD)
                     .context("preload option not present")?;
@@ -595,9 +596,9 @@ impl Player {
 
         // Apply the replacements in reverse order to avoid messing up the ranges.
         replacements.sort_by(|a, b| b.range.start.cmp(&a.range.start));
-        for transformation in replacements.iter() {
+        for transformation in &replacements {
             let receiver = match transformation.target {
-                TransformationTarget::Player => self.player.as_mut().unwrap(),
+                TransformationTarget::Player => self.content.as_mut().unwrap(),
                 TransformationTarget::Scripts => {
                     self.scripts.as_mut().unwrap().scripts.as_mut().unwrap()
                 }
@@ -609,7 +610,7 @@ impl Player {
         // This needs to be done AFTER already inserting the CSS, because these need to be applied
         // on the CSS itself.
         debug!("Downloading CSS dependencies...");
-        let player = self.player.as_ref().unwrap();
+        let player = self.content.as_ref().unwrap();
         let mut replacements: Vec<(Range<usize>, String)> = Vec::new();
         let css_src_caps: Vec<_> = re::CSS_SRC_REGEX.captures_iter(player).collect();
         pb.inc_length(css_src_caps.len() as u64);
@@ -633,7 +634,7 @@ impl Player {
         // Order replacements by reverse order of position so we can safely replace them.
         replacements.sort_by(|a, b| b.0.start.cmp(&a.0.start));
         for (range, output) in replacements {
-            self.player.as_mut().unwrap().replace_range(range, &output);
+            self.content.as_mut().unwrap().replace_range(range, &output);
         }
         Ok(())
     }

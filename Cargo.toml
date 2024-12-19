@@ -14,6 +14,7 @@ chrono = "0.4.39"
 clap = { version = "4.5.23", features = ["derive"] }
 clap-verbosity-flag = "3.0.1"
 colored = "2.1.0"
+const_format = "0.2.34"
 dialoguer = "0.11.0"
 env_logger = "0.11.5"
 exitcode = "1.1.2"
@@ -34,3 +35,7 @@ tokio = { version = "1.42.0", features = ["full"] }
 codegen-units = 1
 lto = true
 strip = true
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+too_many_lines = "allow"
