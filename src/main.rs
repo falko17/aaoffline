@@ -455,7 +455,8 @@ async fn main() -> Result<()> {
         .init();
     let mut ctx = MainContext::new(args);
 
-    if ctx.output.exists() {
+    // Empty directories are fine if they exist already.
+    if ctx.output.exists() && ctx.output.read_dir()?.next().is_some() {
         if ctx.args.remove_existing {
             info!("Output exists already, deleting...");
             ctx.cleanup_data(false);
