@@ -1,0 +1,62 @@
+name: Tests and static analysis
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check:
+    name: Check
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        kind: [debug, release]
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check ${{ matrix.kind == 'release' && '--release' || '' }}
+      - run: cargo clippy ${{ matrix.kind == 'release' && '--release' || '' }}
+
+  test:
+    name: Run tests
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        kind: [debug, release]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --no-fail-fast ${{ matrix.kind == 'release' && '--release' || '' }}
+
+  formatting:
+    name: Check formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --all -- --check
+
+  build:
+    name: Build ${{ matrix.kind }} for ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        kind: [debug, release]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build ${{ matrix.kind == 'release' && '--release' || '' }}
+      - uses: actions/upload-artifact@v4
+        if: ${{ matrix.kind == 'release' }}
+        with:
+          name: ${{ matrix.os == 'windows-latest' && 'aaoffline.exe' || 'aaoffline' }}
+          path: ${{ format('target/{0}/aaoffline{1}', matrix.kind, matrix.os == 'windows-latest' && '.exe' || '') }}
