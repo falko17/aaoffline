@@ -656,12 +656,8 @@ impl AssetDownloader {
             .filter_map(|x| x.as_object())
             .flat_map(|x| x["dialogues"].as_array().expect("dialogues must be array"))
             .filter_map(|x| x.as_object())
-            .map(|x| x["locks"].as_object().expect("locks must be object"))
-            .map(|x| {
-                x["locks_to_display"]
-                    .as_array()
-                    .expect("locks_to_display must be array")
-            })
+            .filter_map(|x| x["locks"].as_object())
+            .filter_map(|x| x["locks_to_display"].as_array())
             .map(Vec::len)
             .max()
             .unwrap_or(0)
