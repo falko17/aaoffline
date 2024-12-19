@@ -8,6 +8,9 @@ on:
     branches:
       - main
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   check:
     name: Check
@@ -58,4 +61,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: ${{ matrix.kind == 'release' }}
         with:
+          name: ${{ matrix.os == 'windows-latest' && 'aaoffline.exe' || 'aaoffline' }}
           path: ${{ format('target/{0}/aaoffline{1}', matrix.kind, matrix.os == 'windows-latest' && '.exe' || '') }}
