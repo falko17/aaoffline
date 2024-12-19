@@ -88,6 +88,9 @@ pub(crate) mod re {
         // groups this time! That's an improvement, right? ...Right?
         Regex::new(r#"generateImageElement\((?P<path>cfg\.picture_dir\s*\+\s*cfg\.locks_subdir\s*\+\s*(?P<type>[^+]*?\s*\+\s*)?['"](?P<name>[^'"]*?)\.gif\?id=['"](?P<id>.*?))\);"#).unwrap()
     });
+
+    pub(crate) static REMOVE_QUERY_PARAMETERS_REGEX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\?.*").unwrap());
 }
 
 pub(crate) const AAONLINE_BASE: &str = "https://aaonline.fr";

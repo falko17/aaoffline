@@ -9,20 +9,24 @@ use indicatif::ProgressBar;
 use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use regex::Regex;
+use reqwest::Client;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
+use crate::constants::re::REMOVE_QUERY_PARAMETERS_REGEX;
 use crate::constants::AAONLINE_BASE;
 use crate::data::case::Case;
 use crate::data::site::{SiteData, SitePaths};
-use crate::{Args, HttpHandling};
+use crate::{GlobalContext, HttpHandling};
 
 /// Downloads a file from the given [url] and returns the output path and file content.
 pub(crate) async fn download_url(
     url: &str,
     http_handling: &HttpHandling,
+    client: &Client,
 ) -> Result<(PathBuf, Bytes)> {
     debug!("Downloading {url}...");
     let output = PathBuf::from("assets").join(url.split('/').last().unwrap_or(url));
@@ -42,7 +46,9 @@ pub(crate) async fn download_url(
     };
 
     // Then, download the file as bytes (since it may be binary).
-    let content = reqwest::get(&target)
+    let content = client
+        .get(&target)
+        .send()
         .await
         .with_context(|| {
             format!("Could not download file from {target}. Please check your internet connection.")
@@ -78,11 +84,11 @@ pub(crate) struct AssetDownload {
 
 /// A downloader for case assets.
 #[derive(Debug)]
-pub(crate) struct AssetDownloader {
-    /// The downloader's arguments.
-    args: Args,
+pub(crate) struct AssetDownloader<'a> {
     /// The collector that will remember our asset download requests.
     collector: AssetCollector,
+    /// [reqwest] client to use for downloading assets.
+    ctx: &'a GlobalContext,
 }
 
 /// Collects asset downloads and assigns unique filenames to them.
@@ -123,17 +129,23 @@ impl AssetCollector {
     /// Creates a new unique path for the given [url] and [path].
     fn new_path(&self, url: &str, path: &Path) -> PathBuf {
         let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("bin");
-        let name = path.file_stem().unwrap_or(path.as_os_str());
-        let first_choice = self.output.join("assets").join(name).with_extension(ext);
+        // Remove any query parameters.
+        let ext = REMOVE_QUERY_PARAMETERS_REGEX.replace(ext, "").to_string();
+        let name = path
+            .file_stem()
+            .unwrap_or(path.as_os_str())
+            .to_str()
+            .expect("invalid filename encountered")
+            .to_string();
+        let name = urlencoding::decode(&name)
+            .map(Cow::into_owned)
+            .unwrap_or(name);
+        let first_choice = self.output.join("assets").join(&name).with_extension(&ext);
         // If we used this filename already, we need to append a hash.
         if self.path_exists(&first_choice) {
             self.output
                 .join("assets")
-                .join(format!(
-                    "{}-{}",
-                    name.to_str().expect("Invalid filename encountered"),
-                    Self::hash(url)
-                ))
+                .join(format!("{name}-{}", Self::hash(url)))
                 .with_extension(ext)
         } else {
             first_choice
@@ -274,15 +286,19 @@ impl AssetCollector {
     }
 }
 
-impl AssetDownloader {
+impl<'a> AssetDownloader<'a> {
     /// Creates a new asset downloader.
     ///
     /// The [`site_data`] is used to determine the default icon path.
-    pub(crate) fn new(args: Args, output: PathBuf, site_data: &SiteData) -> AssetDownloader {
+    pub(crate) fn new(
+        output: PathBuf,
+        site_data: &SiteData,
+        ctx: &'a GlobalContext,
+    ) -> AssetDownloader<'a> {
         let default_icon_path = site_data.site_paths.default_icon();
         AssetDownloader {
-            args,
             collector: AssetCollector::new(default_icon_path, output),
+            ctx,
         }
     }
 
@@ -309,14 +325,15 @@ impl AssetDownloader {
                         .await,
                 )
             })
-            .buffer_unordered(self.args.concurrent_downloads)
+            .buffer_unordered(self.ctx.args.concurrent_downloads)
             .collect()
             .await
     }
 
     /// Downloads the given [asset] and writes it to its set path, returning that path.
     async fn download_asset(&self, asset: &AssetDownload) -> Result<PathBuf> {
-        let (_, content) = download_url(&asset.url, &self.args.http_handling).await?;
+        let (_, content) =
+            download_url(&asset.url, &self.ctx.args.http_handling, &self.ctx.client).await?;
         Self::write_asset(&asset.path, &content).map(|()| asset.path.clone())
     }
 
@@ -750,13 +767,13 @@ impl AssetDownloader {
             error!(
                 "Could not download asset at {}: {err}{}",
                 asset.map_or(String::from("[UNKNOWN URL]"), |x| x.url),
-                if self.args.continue_on_asset_error {
+                if self.ctx.args.continue_on_asset_error {
                     " (continuing anyway)"
                 } else {
                     " (set --continue-on-asset-error to ignore this)"
                 }
             );
-            if !self.args.continue_on_asset_error {
+            if !self.ctx.args.continue_on_asset_error {
                 return Err(anyhow!("Could not download asset: {err}"));
             }
         }

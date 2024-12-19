@@ -3,7 +3,7 @@
 use crate::constants::{re, AAONLINE_BASE, BITBUCKET_URL};
 use crate::download::{download_url, make_data_uri};
 use crate::transform::php;
-use crate::Args;
+use crate::GlobalContext;
 use anyhow::{Context, Result};
 
 use const_format::formatcp;
@@ -11,6 +11,7 @@ use indicatif::ProgressBar;
 use log::{debug, trace, warn};
 
 use regex::{Captures, Regex};
+use reqwest::Client;
 use serde_json::Value;
 
 use std::collections::HashSet;
@@ -40,17 +41,17 @@ fn merge(a: &mut Value, b: Value) {
     *a = b;
 }
 
-type ModuleTransformer = fn(&Player, &str, &mut String) -> Result<()>;
+type ModuleTransformer = fn(&SiteData, &str, &mut String) -> Result<()>;
 
 /// A collection of JavaScript modules for the case player.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct PlayerScripts {
     /// The concatenated JavaScript modules for the player.
     pub(crate) scripts: Option<String>,
     /// The set of modules that have already been encountered.
     encountered_modules: HashSet<String>,
-    /// The arguments to the command-line invocation of this script.
-    args: Args,
+    /// The global context for this program.
+    pub(crate) ctx: GlobalContext,
 }
 
 /// The target of a transformation.
@@ -85,7 +86,7 @@ impl PlayerTransformation {
 
 impl PlayerScripts {
     /// Retrieves the JavaScript text for the module with the given [name].
-    async fn retrieve_js_text(name: &str, player_version: &str) -> Result<String> {
+    async fn retrieve_js_text(client: &Client, name: &str, player_version: &str) -> Result<String> {
         let url = if name == "default_data" {
             // This is a special case—we can unfortunately not use the source code of AAO here
             // and need to access the rendered version from aaonline.fr, since this is a PHP file.
@@ -97,7 +98,7 @@ impl PlayerScripts {
         } else {
             &format!("{BITBUCKET_URL}/{player_version}/Javascript/{name}.js")
         };
-        reqwest::get(url)
+        client.get(url).send()
             .await
             .with_context(|| {
                 "Could not download scripts from AAO repository. Please check your internet connection."
@@ -115,7 +116,7 @@ impl PlayerScripts {
     /// the target module with the given [name].
     async fn retrieve_js_module(
         &mut self,
-        player: &Player,
+        site_data: &SiteData,
         name: &str,
         pb: Option<&ProgressBar>,
         module_transformer: ModuleTransformer,
@@ -128,12 +129,13 @@ impl PlayerScripts {
         debug!("Retrieving JS module {name}");
         self.encountered_modules.insert(name.to_string());
 
-        let mut text = Self::retrieve_js_text(name, &self.args.player_version).await?;
+        let mut text =
+            Self::retrieve_js_text(&self.ctx.client, name, &self.ctx.args.player_version).await?;
         if let Some(x) = pb {
             x.inc(1);
         }
 
-        module_transformer(player, name, &mut text)?;
+        module_transformer(site_data, name, &mut text)?;
 
         let captures = re::MODULE_REGEX
             .captures(&text)
@@ -157,7 +159,7 @@ impl PlayerScripts {
         let mut mod_text = String::new();
         for dependency in deps {
             mod_text.push_str(
-                &Box::pin(self.retrieve_js_module(player, dependency, pb, module_transformer))
+                &Box::pin(self.retrieve_js_module(site_data, dependency, pb, module_transformer))
                     .await?,
             );
         }
@@ -187,19 +189,20 @@ impl PlayerScripts {
     /// at download time (i.e., now). The entry point for these is `player.js`.
     pub(crate) async fn retrieve_player_scripts(
         &mut self,
-        player: &Player,
+        site_data: &SiteData,
         pb: &ProgressBar,
         transform_module: ModuleTransformer,
     ) -> Result<()> {
         pb.inc_length(37);
-        let config = serde_json::to_string(&player.site_data.site_paths)?;
+        let config = serde_json::to_string(&site_data.site_paths)?;
         let common_js = download_url(
             format!(
                 "{BITBUCKET_URL}/{}/Javascript/common.js",
-                self.args.player_version
+                self.ctx.args.player_version
             )
             .as_str(),
-            &self.args.http_handling,
+            &self.ctx.args.http_handling,
+            &self.ctx.client,
         )
         .await?;
         pb.inc(1);
@@ -219,7 +222,7 @@ window.addEventListener('load', function() {{
     initScripts.forEach((x) => x());
 }}, false);\n",
             String::from_utf8(common_js.1.to_vec())?,
-            self.retrieve_js_module(player, "player", Some(pb), transform_module)
+            self.retrieve_js_module(site_data, "player", Some(pb), transform_module)
                 .await?
         ));
         Ok(())
@@ -227,44 +230,61 @@ window.addEventListener('load', function() {{
 }
 
 /// The player for an Ace Attorney Online case.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct Player {
     /// The site data for the Ace Attorney Online server.
     pub(crate) site_data: SiteData,
-    /// The arguments to the command-line invocation of this script.
-    pub(crate) args: Args,
     /// The player's code.
     pub(crate) content: Option<String>,
     /// The scripts used by the player.
-    pub(crate) scripts: Option<PlayerScripts>,
+    pub(crate) scripts: PlayerScripts,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SavedPlayerState {
+    content: Option<String>,
+    scripts: Option<String>,
+    encountered_modules: HashSet<String>,
 }
 
 impl Player {
+    pub(crate) fn save(&self) -> SavedPlayerState {
+        SavedPlayerState {
+            content: self.content.clone(),
+            scripts: self.scripts.scripts.clone(),
+            encountered_modules: self.scripts.encountered_modules.clone(),
+        }
+    }
+
+    pub(crate) fn restore(&mut self, state: SavedPlayerState) {
+        self.content = state.content;
+        self.scripts.scripts = state.scripts;
+        self.scripts.encountered_modules = state.encountered_modules;
+    }
+
     /// Creates a new player with the given [args].
-    pub(crate) async fn new(args: Args) -> Result<Self> {
+    pub(crate) async fn new(ctx: GlobalContext) -> Result<Self> {
         let default_text =
-            PlayerScripts::retrieve_js_text("default_data", &args.player_version).await?;
-        let site_data = SiteData::from_site_data(&default_text).await?;
-        let mut player = Player {
+            PlayerScripts::retrieve_js_text(&ctx.client, "default_data", &ctx.args.player_version)
+                .await?;
+        let site_data = SiteData::from_site_data(&default_text, &ctx.client).await?;
+        Ok(Player {
             site_data,
-            args: args.clone(),
-            scripts: None,
             content: None,
-        };
-        player.scripts = Some(PlayerScripts {
-            scripts: Some(default_text),
-            encountered_modules: HashSet::new(),
-            args: args.clone(),
-        });
-        Ok(player)
+            scripts: PlayerScripts {
+                scripts: Some(default_text),
+                encountered_modules: HashSet::new(),
+                ctx,
+            },
+        })
     }
 
     /// Potentially transforms the module with the given [name] and [content].
-    fn transform_module(&self, name: &str, content: &mut String) -> Result<()> {
+    fn transform_module(site_data: &SiteData, name: &str, content: &mut String) -> Result<()> {
         if name == "default_data" {
             // Here we need to insert our modified default data, to avoid the default
             // resources being retrieved from the AAO server.
-            self.site_data.default_data.write_default_module(content)
+            site_data.default_data.write_default_module(content)
         } else {
             Ok(())
         }
@@ -272,10 +292,11 @@ impl Player {
 
     /// Retrieves the player code from the AAO repository.
     pub(crate) async fn retrieve_player(&mut self) -> Result<()> {
-        let mut player = reqwest::get(format!(
+        let mut player = self.scripts.ctx.client.get(format!(
             "{BITBUCKET_URL}/{}/player.php",
-            self.args.player_version
+            self.scripts.ctx.args.player_version
         ))
+        .send()
         .await
         .with_context(|| {
             "Could not download player from AAO repository. Please check your internet connection."
@@ -293,34 +314,30 @@ impl Player {
 
     /// Retrieves the player scripts from the AAO repository.
     pub(crate) async fn retrieve_scripts(&mut self, pb: &ProgressBar) -> Result<()> {
-        let mut scripts = self.scripts.take().expect("Scripts not initialized!");
-        let transformer: ModuleTransformer =
-            |player, name, content| player.transform_module(name, content);
-        scripts
-            .retrieve_player_scripts(self, pb, transformer)
+        self.scripts
+            .retrieve_player_scripts(&self.site_data, pb, Self::transform_module)
             .await?;
-        self.scripts = Some(scripts);
         Ok(())
     }
 
     // Transforms the player and its scripts to work offline.
     pub(crate) fn transform_player(&mut self, case: &Case) -> Result<()> {
         // We need to temporarily move the scripts out here, or the borrow checker will complain.
-        let mut scripts = self.scripts.as_mut().unwrap().scripts.take().unwrap();
+        let mut scripts = self.scripts.scripts.take().unwrap();
         // Important: Trial needs to be modified before player, as the trial will then be inserted
         // as part of the scripts into the player.
-        php::transform_trial_blocks(self, case, &mut scripts)?;
-        self.scripts.as_mut().unwrap().scripts = Some(scripts);
-        php::transform_player_blocks(self, case)
+        php::transform_trial_blocks(&self.scripts, case, &mut scripts)?;
+        self.scripts.scripts = Some(scripts);
+        php::transform_player_blocks(self.content.as_mut().unwrap(), &self.scripts, case)
     }
 
     /// Applies the given [regex] to both the [player] and the [scripts] and returns a list of the
     /// targets it was applied to and their captures.
-    fn regex_for_both<'a>(
-        regex: &'a Regex,
-        player: &'a str,
-        scripts: &'a str,
-    ) -> Vec<(TransformationTarget, Captures<'a>)> {
+    fn regex_for_both<'b>(
+        regex: &'b Regex,
+        player: &'b str,
+        scripts: &'b str,
+    ) -> Vec<(TransformationTarget, Captures<'b>)> {
         regex
             .captures_iter(player)
             .map(|x| (TransformationTarget::Player, x))
@@ -339,7 +356,7 @@ impl Player {
 
         let mut replacements: Vec<PlayerTransformation> = Vec::new();
         let player = self.content.as_ref().unwrap();
-        let scripts = self.scripts.as_ref().unwrap().scripts.as_ref().unwrap();
+        let scripts = self.scripts.scripts.as_ref().unwrap();
         // We need to remove the Google Analytics tag at the bottom of the page.
         if let Some(m) = re::GOOGLE_ANALYTICS_REGEX.find(player) {
             replacements.push(PlayerTransformation::new(
@@ -363,7 +380,12 @@ impl Player {
         for (target, css) in css_caps {
             let whole = css.get(0).unwrap();
             let group = css.get(1).unwrap();
-            let result = download_url(group.as_str(), &self.args.http_handling).await;
+            let result = download_url(
+                group.as_str(),
+                &self.scripts.ctx.args.http_handling,
+                &self.scripts.ctx.client,
+            )
+            .await;
             pb.inc(1);
 
             if let Ok((_, content)) = result {
@@ -383,7 +405,8 @@ impl Player {
             let group = include.get(1).unwrap();
             let result = download_url(
                 &format!("CSS/{}.css", group.as_str()),
-                &self.args.http_handling,
+                &self.scripts.ctx.args.http_handling,
+                &self.scripts.ctx.client,
             )
             .await;
             pb.inc(1);
@@ -409,7 +432,7 @@ impl Player {
         let lang = re::LANGUAGE_INCLUDE_REGEX
             .captures(scripts)
             .context("Could not find language data in source.")?;
-        let config_lang = &self.args.language;
+        let config_lang = &self.scripts.ctx.args.language;
         let func_end = lang.get(0).unwrap().end();
         let group = lang.get(1).unwrap();
         let callback = lang.get(2).unwrap();
@@ -425,8 +448,8 @@ impl Player {
         let mut lang_json = Value::Null;
         pb.inc_length(lang_files.len() as u64);
         for lang_file in lang_files {
-            let (_, content) = download_url(&format!("{lang_dir}/{config_lang}/{lang_file}.js"), &self.args.http_handling).await
-                .context(format!("Could not download language files for {lang_file}. Please make sure the given language {} exists.", self.args.language))?;
+            let (_, content) = download_url(&format!("{lang_dir}/{config_lang}/{lang_file}.js"), &self.scripts.ctx.args.http_handling, &self.scripts.ctx.client).await
+                .context(format!("Could not download language files for {lang_file}. Please make sure the given language {} exists.", self.scripts.ctx.args.language))?;
             pb.inc(1);
             let lang = serde_json::from_slice::<Value>(&content)?;
             merge(&mut lang_json, lang);
@@ -472,7 +495,12 @@ impl Player {
                 // No need to do anything about data URLs.
                 continue;
             }
-            let result = download_url(group.as_str(), &self.args.http_handling).await;
+            let result = download_url(
+                group.as_str(),
+                &self.scripts.ctx.args.http_handling,
+                &self.scripts.ctx.client,
+            )
+            .await;
             if let Ok((_, content)) = result {
                 replacements.push(PlayerTransformation::new(
                     target,
@@ -491,9 +519,10 @@ impl Player {
             let result = download_url(
                 &format!(
                     "{BITBUCKET_URL}/{}/Javascript/howler.js/howler.min.js",
-                    self.args.player_version
+                    self.scripts.ctx.args.player_version
                 ),
-                &self.args.http_handling,
+                &self.scripts.ctx.args.http_handling,
+                &self.scripts.ctx.client,
             )
             .await;
             pb.inc(1);
@@ -517,7 +546,7 @@ impl Player {
                 replacements.push(PlayerTransformation::new(
                     TransformationTarget::Scripts,
                     preload_pos + PRELOAD.len()..preload_pos + PRELOAD.len(),
-                    format!(", html5: {}", !self.args.disable_html5_audio),
+                    format!(", html5: {}", !self.scripts.ctx.args.disable_html5_audio),
                 ));
             } else if let Err(e) = result {
                 warn!("Could not download Howler.js, skipping: {e}");
@@ -599,9 +628,7 @@ impl Player {
         for transformation in &replacements {
             let receiver = match transformation.target {
                 TransformationTarget::Player => self.content.as_mut().unwrap(),
-                TransformationTarget::Scripts => {
-                    self.scripts.as_mut().unwrap().scripts.as_mut().unwrap()
-                }
+                TransformationTarget::Scripts => self.scripts.scripts.as_mut().unwrap(),
             };
             receiver.replace_range(transformation.range.clone(), &transformation.replacement);
         }
@@ -622,8 +649,12 @@ impl Player {
                 pb.inc(1);
                 continue;
             }
-            let result =
-                download_url(&format!("CSS/{}", group.as_str()), &self.args.http_handling).await;
+            let result = download_url(
+                &format!("CSS/{}", group.as_str()),
+                &self.scripts.ctx.args.http_handling,
+                &self.scripts.ctx.client,
+            )
+            .await;
             if let Ok((_, content)) = result {
                 replacements.push((group.range(), make_data_uri(&content)?));
             } else if let Err(e) = result {

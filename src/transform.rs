@@ -11,9 +11,9 @@ pub(crate) mod php {
 
     use crate::constants::{re, UPDATE_MESSAGE};
     use crate::data::case::Case;
-    use crate::data::player::Player;
+    use crate::data::player::PlayerScripts;
 
-    type BlockTransformer = fn(&Player, &Case) -> Result<String>;
+    type BlockTransformer = fn(&PlayerScripts, &Case) -> Result<String>;
 
     /// A matched `<?php ... ?>` block within the player.
     #[derive(Clone, Debug)]
@@ -67,7 +67,7 @@ pub(crate) mod php {
             start: usize,
             end: usize,
             detector: LazyLock<Regex>,
-            replacer: Option<fn(&Player, &Case) -> Result<String>>,
+            replacer: Option<fn(&PlayerScripts, &Case) -> Result<String>>,
         ) -> ExpectedPhpBlock {
             ExpectedPhpBlock {
                 id,
@@ -91,7 +91,7 @@ pub(crate) mod php {
         }
 
         /// Runs the replacer function for this block, if it exists, returning the transformed contents.
-        fn replace(&self, player_scripts: &Player, case: &Case) -> Result<String> {
+        fn replace(&self, player_scripts: &PlayerScripts, case: &Case) -> Result<String> {
             if let Some(replacer) = self.replacer {
                 replacer(player_scripts, case)
             } else {
@@ -114,7 +114,7 @@ pub(crate) mod php {
         const fn new_rangeless(
             id: &'static str,
             detector: LazyLock<Regex>,
-            replacer: Option<fn(&Player, &Case) -> Result<String>>,
+            replacer: Option<fn(&PlayerScripts, &Case) -> Result<String>>,
         ) -> ExpectedPhpBlock {
             ExpectedPhpBlock {
                 id,
@@ -127,7 +127,7 @@ pub(crate) mod php {
 
     /// Transforms the given [source] string by replacing PHP blocks that match the given [blocks].
     fn transform_blocks(
-        player: &Player,
+        scripts: &PlayerScripts,
         case: &Case,
         source: &mut String,
         blocks: &[ExpectedPhpBlock],
@@ -166,7 +166,7 @@ pub(crate) mod php {
                 let result = result[0];
                 let mut block = FoundPhpBlock::new(start, end);
                 result.1.expect_match(&block);
-                block.replaced = Some(result.1.replace(player, case)?);
+                block.replaced = Some(result.1.replace(scripts, case)?);
 
                 // Mark block as visited.
                 visited.push(result.0);
@@ -200,7 +200,7 @@ pub(crate) mod php {
 
     /// Transforms the blocks within the given [source] string (that's assumed to be `trial.js.php`).
     pub(crate) fn transform_trial_blocks(
-        player: &Player,
+        scripts: &PlayerScripts,
         case: &Case,
         source: &mut String,
     ) -> Result<()> {
@@ -217,11 +217,15 @@ pub(crate) mod php {
             ),
         ];
 
-        transform_blocks(player, case, source, &EXPECTED_TRIAL_BLOCKS)
+        transform_blocks(scripts, case, source, &EXPECTED_TRIAL_BLOCKS)
     }
 
     /// Transforms the blocks within the given [source] string (that's assumed to be `player.php`).
-    pub(crate) fn transform_player_blocks(player: &mut Player, case: &Case) -> Result<()> {
+    pub(crate) fn transform_player_blocks(
+        playertext: &mut String,
+        scripts: &PlayerScripts,
+        case: &Case,
+    ) -> Result<()> {
         static EXPECTED_PLAYER_BLOCKS: [ExpectedPhpBlock; 5] = [
             ExpectedPhpBlock::new(
                 "common_render",
@@ -235,22 +239,14 @@ pub(crate) mod php {
                 224,
                 272,
                 LazyLock::new(|| Regex::new(r"echo language_backend\(.*\)").unwrap()),
-                Some(|p, _| Ok(p.args.language.clone())),
+                Some(|s, _| Ok(s.ctx.args.language.clone())),
             ),
             ExpectedPhpBlock::new(
                 "script",
                 276,
                 396,
                 LazyLock::new(|| Regex::new(r"include\('bridge\.js\.php'\);").unwrap()),
-                Some(|p, _| {
-                    Ok(p.scripts
-                        .as_ref()
-                        .unwrap()
-                        .scripts
-                        .as_ref()
-                        .unwrap()
-                        .clone())
-                }),
+                Some(|s, _| Ok(s.scripts.as_ref().unwrap().clone())),
             ),
             ExpectedPhpBlock::new(
                 "title",
@@ -268,9 +264,6 @@ pub(crate) mod php {
             ),
         ];
 
-        let mut playertext = player.content.as_mut().unwrap().clone();
-        transform_blocks(player, case, &mut playertext, &EXPECTED_PLAYER_BLOCKS)?;
-        player.content = Some(playertext);
-        Ok(())
+        transform_blocks(scripts, case, playertext, &EXPECTED_PLAYER_BLOCKS)
     }
 }

@@ -19,6 +19,7 @@ use human_panic::setup_panic;
 use indicatif::{MultiProgress, ProgressBar};
 use itertools::Itertools;
 use log::{debug, error, info, warn, Level};
+use reqwest::Client;
 use serde::Serialize;
 use std::borrow::Cow;
 use std::io::{self, IsTerminal};
@@ -31,7 +32,7 @@ use clap_verbosity_flag::DebugLevel;
 use clap_verbosity_flag::InfoLevel;
 
 /// How to handle insecure HTTP requests.
-#[derive(Debug, ValueEnum, Clone, Serialize, Default)]
+#[derive(Debug, ValueEnum, Clone, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 enum HttpHandling {
     /// Fail when an insecure HTTP request is encountered.
@@ -147,11 +148,18 @@ impl Args {
     }
 }
 
+/// The global context for the program.
+#[derive(Debug)]
+pub(crate) struct GlobalContext {
+    /// The parsed command line arguments.
+    args: Args,
+    /// The HTTP client to use for requests.
+    client: Client,
+}
+
 /// The main context for the program.
 #[derive(Debug)]
 struct MainContext {
-    /// The parsed command line arguments.
-    args: Args,
     /// The output directory for the case.
     output: PathBuf,
     /// Whether the output directory was empty before we started.
@@ -164,9 +172,24 @@ struct MainContext {
     multi_progress: MultiProgress,
     /// The player instance.
     player: Option<Player>,
+    /// The global context.
+    global_ctx: Option<GlobalContext>,
 }
 
 impl MainContext {
+    fn ctx(&self) -> &GlobalContext {
+        // The context always either belongs to us or to the player (or more specifically, its
+        // PlayerScripts instance).
+        self.global_ctx.as_ref().unwrap_or_else(|| {
+            &self
+                .player
+                .as_ref()
+                .expect("either player or MainContext must have GlobalContext")
+                .scripts
+                .ctx
+        })
+    }
+
     /// Creates a new main context from the given [args].
     fn new(args: Args) -> MainContext {
         let case_ids = args.cases.clone();
@@ -182,14 +205,22 @@ impl MainContext {
         });
         let output_was_empty = !std::fs::read_dir(&output).is_ok_and(|mut x| x.next().is_some());
         let multi_progress = MultiProgress::new();
+        let http_handling = args.http_handling.clone();
         MainContext {
-            args,
             case_ids,
             output,
             output_was_empty,
             pb: multi_progress.add(ProgressBar::new_spinner()),
             multi_progress,
             player: None,
+            global_ctx: Some(GlobalContext {
+                args,
+                client: Client::builder()
+                    .user_agent("aaoffline")
+                    .https_only(http_handling == HttpHandling::Disallow)
+                    .build()
+                    .expect("client cannot be built"),
+            }),
         }
     }
 
@@ -197,7 +228,7 @@ impl MainContext {
     fn show_step(&self, step: u8, text: &str) {
         self.pb
             .set_message(format!("{} {text}", format!("[{step}/7]").dimmed()));
-        if !Self::should_hide_pb(&self.args) {
+        if !Self::should_hide_pb(&self.ctx().args) {
             self.pb.enable_steady_tick(Duration::from_millis(50));
         }
     }
@@ -212,7 +243,7 @@ impl MainContext {
 
     /// Adds a new progress bar with the given [max] value.
     fn add_progress(&self, max: u64) -> ProgressBar {
-        if Self::should_hide_pb(&self.args) {
+        if Self::should_hide_pb(&self.ctx().args) {
             ProgressBar::hidden()
         } else {
             self.multi_progress.add(ProgressBar::new(max))
@@ -286,22 +317,29 @@ impl MainContext {
 
     /// Retrieves the case information for all cases and possibly their sequences.
     async fn retrieve_case_infos(&mut self) -> Result<Vec<Case>> {
-        let mut cases: Vec<_> = Self::download_case_infos_no_sequence(&self.case_ids).await?;
+        // We temporarily move the context out of here to use its client freely.
+        let ctx = self.global_ctx.take().expect("context must exist here");
+        let client = &ctx.client;
+        let mut cases: Vec<_> =
+            Self::download_case_infos_no_sequence(&self.case_ids, client).await?;
         cases.append(
             &mut Self::download_case_infos_no_sequence(
                 &cases
                     .iter()
-                    .flat_map(|case| self.additional_cases(case))
+                    .flat_map(|case| self.additional_cases(case, &ctx))
                     .collect::<Vec<u32>>(),
+                client,
             )
             .await?,
         );
+        // And then we put it back.
+        self.global_ctx = Some(ctx);
         Ok(cases)
     }
 
     /// Downloads the case information for the given [ids], without downloading the sequences.
-    async fn download_case_infos_no_sequence(ids: &[u32]) -> Result<Vec<Case>> {
-        future::join_all(ids.iter().map(|x| Case::retrieve_from_id(*x)))
+    async fn download_case_infos_no_sequence(ids: &[u32], client: &Client) -> Result<Vec<Case>> {
+        future::join_all(ids.iter().map(|x| Case::retrieve_from_id(*x, client)))
             .await
             .into_iter()
             .collect()
@@ -310,11 +348,11 @@ impl MainContext {
     /// Retrieves additional cases that should be downloaded if the given [case] is part of a sequence.
     ///
     /// This is dependent on the value of the `sequence` field in the arguments.
-    fn additional_cases(&mut self, case: &Case) -> Vec<u32> {
+    fn additional_cases(&mut self, case: &Case, ctx: &GlobalContext) -> Vec<u32> {
         // Check if the user wants to download the whole sequence this case is contained in.
         if let Some(sequence) = case.case_information.sequence.as_ref() {
             debug!("Sequence detected: {sequence}");
-            if match self.args.sequence {
+            if match ctx.args.sequence {
                 DownloadSequence::Every => true,
                 DownloadSequence::Single => false,
                 DownloadSequence::Ask => self.ask_sequence(case, sequence),
@@ -356,7 +394,8 @@ impl MainContext {
 
     /// Retrieves the site configuration for Ace Attorney Online.
     async fn retrieve_site_config(&mut self) -> Result<()> {
-        self.player = Some(Player::new(self.args.clone()).await?);
+        // Here, we pass over ownership of the context to the player.
+        self.player = Some(Player::new(self.global_ctx.take().expect("ctx must exist")).await?);
         Ok(())
     }
 
@@ -365,7 +404,8 @@ impl MainContext {
         let pb = self.add_progress(0);
         let player = self.player.as_mut().unwrap();
         let site_data = &mut player.site_data;
-        let mut handler = AssetDownloader::new(self.args.clone(), self.output.clone(), site_data);
+        let ctx = &player.scripts.ctx;
+        let mut handler = AssetDownloader::new(self.output.clone(), site_data, ctx);
         let multiple = cases.len() > 1;
         // We need to remember these because we overwrite them while collecting downloads,
         // and we may collect downloads more than once (for multiple cases), in which case we'd
@@ -457,11 +497,12 @@ async fn main() -> Result<()> {
 
     // Empty directories are fine if they exist already.
     if ctx.output.exists() && ctx.output.read_dir()?.next().is_some() {
-        if ctx.args.remove_existing {
+        if ctx.ctx().args.remove_existing {
             info!("Output exists already, deleting...");
             ctx.cleanup_data(false);
-        } else if ctx.args.cases.len() == 1
+        } else if ctx.ctx().args.cases.len() == 1
             || ctx
+                .ctx()
                 .args
                 .cases
                 .iter()
@@ -514,7 +555,7 @@ async fn main() -> Result<()> {
     ctx.show_step(6, "Retrieving additional external player sources...");
     ctx.retrieve_player_sources().await?;
 
-    let original_player = ctx.player.clone().unwrap();
+    let original_state = ctx.player.as_ref().unwrap().save();
     for case in cases {
         // Need to reset transformed player.
         ctx.show_step(
@@ -524,7 +565,7 @@ async fn main() -> Result<()> {
                 case.case_information.title
             ),
         );
-        ctx.player = Some(original_player.clone());
+        ctx.player.as_mut().unwrap().restore(original_state.clone());
         ctx.transform_player_blocks(&case)?;
         let output_path = if only_one {
             &ctx.output

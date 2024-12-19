@@ -9,6 +9,7 @@ use colored::Colorize;
 use const_format::formatcp;
 use log::{debug, trace};
 
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::formats::Flexible;
@@ -125,10 +126,10 @@ impl Case {
     }
 
     /// Retrieves a case using the given [`case_id`] from Ace Attorney Online.
-    pub(crate) async fn retrieve_from_id(case_id: u32) -> Result<Case> {
-        let case_script = reqwest::get(format!(
+    pub(crate) async fn retrieve_from_id(case_id: u32, client: &Client) -> Result<Case> {
+        let case_script = client.get(format!(
         "{AAONLINE_BASE}/trial.js.php?trial_id={case_id}",
-    )).await
+    )).send().await
     .context(
         formatcp!("Could not download case data from {AAONLINE_BASE}. Please check your internet connection.")
     )?
