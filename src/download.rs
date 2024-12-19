@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::constants::AAONLINE_BASE;
 use crate::data::case::Case;
-use crate::data::site::SiteData;
+use crate::data::site::{SiteData, SitePaths};
 use crate::{Args, HttpHandling};
 
 /// Downloads a file from the given [url] and returns the output path and file content.
@@ -234,7 +234,7 @@ impl AssetCollector {
             default_extension,
             None,
             false,
-        ))
+        ));
     }
 
     /// Collects a download request for the given [`file_value`], using the given [`name`] as a
@@ -254,7 +254,7 @@ impl AssetCollector {
             None,
             Some(name),
             ignore_inaccessible,
-        ))
+        ));
     }
 
     /// Returns the unique downloads that have been collected.
@@ -317,7 +317,7 @@ impl AssetDownloader {
     /// Downloads the given [asset] and writes it to its set path, returning that path.
     async fn download_asset(&self, asset: &AssetDownload) -> Result<PathBuf> {
         let (_, content) = download_url(&asset.url, &self.args.http_handling).await?;
-        Self::write_asset(&asset.path, &content).map(|_| asset.path.clone())
+        Self::write_asset(&asset.path, &content).map(|()| asset.path.clone())
     }
 
     /// Writes the given [content] to the given [path].
@@ -341,12 +341,12 @@ impl AssetDownloader {
         Ok(())
     }
 
-    /// Downloads the psyche lock file with the given [name], assuming a maximum number of
+    /// Collects the psyche lock file with the given [name], assuming a maximum number of
     /// [`max_locks`] for the case.
     ///
     /// This will attempt to create symbolic links for the psyche lock files, but will fall back to
     /// using copies if symbolic links are not supported. Panics if that also doesn't work.
-    fn download_psyche_locks(&mut self, site_data: &SiteData, name: &str, max_locks: u8) {
+    fn collect_psyche_locks_file(&mut self, name: &str, max_locks: u8, site_data: &SiteData) {
         let mut file_value = Value::String(name.to_string());
         self.collector.collect_download(
             &mut file_value,
@@ -383,7 +383,7 @@ impl AssetDownloader {
         std::os::windows::fs::symlink_file(orig, target)
     }
 
-    /// Collects the case asset download requests for the given [case] and [site_data], returning
+    /// Collects the case asset download requests for the given [case] and [`site_data`], returning
     /// the (possibly faulty) requests in a vector.
     ///
     /// *Note: This does not start the downloads yet!*
@@ -400,27 +400,33 @@ impl AssetDownloader {
             .context("Trial data must be an object")?;
 
         let cloned_profiles = data["profiles"].clone();
-        let id_profiles: HashMap<i64, &str> = cloned_profiles
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|x| x.as_object())
-            .map(|x| {
-                (
-                    x["id"].as_i64().expect("profile ID must be number"),
-                    x["base"].as_str().expect("profile base must be string"),
-                )
-            })
-            .collect();
-        let used_default_sprites = used_sprites
-            .into_iter()
-            // Only non-positive sprite IDs are default sprites.
-            .filter(|x| x.1 < 0)
-            .map(|x| (id_profiles[&x.0], -x.1))
-            .unique()
-            .collect_vec();
-        trace!("{:?}", used_default_sprites);
+        let used_default_sprites = Self::get_used_default_sprites(&cloned_profiles, used_sprites);
+        self.collect_profiles(data, &used_default_sprites, site_data);
 
+        self.collect_evidence(data, paths);
+
+        self.collect_places(&mut site_data.default_data.default_places, data, paths)?;
+
+        self.collect_popups(data, paths)?;
+
+        self.collect_music(data, paths)?;
+
+        self.collect_sounds(data, paths)?;
+
+        self.collect_voices(paths);
+
+        self.collect_psyche_locks(data, site_data);
+
+        Ok(self.collector.get_unique_downloads())
+    }
+
+    /// Collects the profile assets used in the case.
+    fn collect_profiles(
+        &mut self,
+        data: &mut serde_json::Map<String, Value>,
+        used_default_sprites: &[(&str, i64)],
+        site_data: &SiteData,
+    ) {
         const SPRITE_KINDS: [&str; 3] = ["talking", "still", "startup"];
 
         // Download only the default sprites that ended up actually being used.
@@ -439,28 +445,28 @@ impl AssetDownloader {
                     &PathBuf::from("assets")
                         .join(format!("{base}_{i}_{kind}"))
                         .with_extension("gif"),
-                    Some(paths.sprite_path(kind, base)),
+                    Some(site_data.site_paths.sprite_path(kind, base)),
                     Some(false),
                     false,
                 );
             }
         }
-
-        // Download the profiles.
         let profiles = data["profiles"]
             .as_array_mut()
             .unwrap()
             .iter_mut()
             .filter_map(|x| x.as_object_mut());
         for profile in profiles {
-            if profile["icon"].as_str().is_none_or(|x| x.is_empty()) {
+            if profile["icon"].as_str().is_none_or(str::is_empty) {
                 // This does not use an external URL.
                 // To avoid too many bookkeeping shenanigans here, we just
                 // override icon with the URL to the base AAO asset as if it were external.
-                profile["icon"] = profile["base"]
-                    .as_str()
-                    .map(|x| Value::String(format!("{}/{x}.png", paths.icon_path().join("/"))))
-                    .unwrap_or(Value::Null);
+                profile["icon"] = profile["base"].as_str().map_or(Value::Null, |x| {
+                    Value::String(format!(
+                        "{}/{x}.png",
+                        site_data.site_paths.icon_path().join("/")
+                    ))
+                });
             }
             self.collector
                 .collect_download(&mut profile["icon"], None, Some(true), Some("png"));
@@ -473,7 +479,7 @@ impl AssetDownloader {
                 .map(|x| x.as_object_mut().expect("Custom sprite must be object"))
             {
                 for kind in SPRITE_KINDS {
-                    if custom[kind].as_str().is_none_or(|x| x.is_empty()) {
+                    if custom[kind].as_str().is_none_or(str::is_empty) {
                         continue;
                     }
                     self.collector.collect_download(
@@ -485,6 +491,10 @@ impl AssetDownloader {
                 }
             }
         }
+    }
+
+    /// Collects the evidence assets used in the case.
+    fn collect_evidence(&mut self, data: &mut serde_json::Map<String, Value>, paths: &SitePaths) {
         // Download the evidence.
         for evidence in data["evidence"]
             .as_array_mut()
@@ -517,15 +527,21 @@ impl AssetDownloader {
                     .collect_download(&mut check_data["content"], None, None, None);
             }
         }
+    }
 
-        // Download the places.
-        // Default places are of the form {id: place,...} where we're only interested in the place.
-        let default_places = site_data
-            .default_data
-            .default_places
+    /// Collects the place assets used in the case.
+    fn collect_places(
+        &mut self,
+        default_places: &mut Value,
+        data: &mut serde_json::Map<String, Value>,
+        paths: &SitePaths,
+    ) -> Result<(), anyhow::Error> {
+        // We need to download the default places as well.
+        let default_places = default_places
             .as_object_mut()
             .context("Default places must be map")?
             .values_mut();
+
         for place in data["places"]
             .as_array_mut()
             .unwrap()
@@ -555,43 +571,41 @@ impl AssetDownloader {
             }
 
             // Download background objects.
-            for bg_object in place["background_objects"]
-                .as_array_mut()
-                .map(|x| x.iter_mut().filter_map(|y| y.as_object_mut()))
-                .context("Background objects must be in an array!")?
-            {
-                if !bg_object["external"]
-                    .as_bool()
-                    .or_else(|| bg_object["external"].as_i64().map(|x| x == 1))
-                    .unwrap_or(false)
-                {
-                    warn!("Found non-external background object, even though these should always be external! Skipping.");
-                    continue;
-                }
-                self.collector
-                    .collect_download(&mut bg_object["image"], None, Some(true), None);
-            }
+            self.collect_place_objects(&mut place["background_objects"])?;
 
             // Download foreground objects.
-            for fg_object in place["foreground_objects"]
-                .as_array_mut()
-                .map(|x| x.iter_mut().filter_map(|y| y.as_object_mut()))
-                .context("Background objects must be in an array!")?
-            {
-                if !fg_object["external"]
-                    .as_bool()
-                    .or_else(|| fg_object["external"].as_i64().map(|x| x == 1))
-                    .unwrap_or(false)
-                {
-                    warn!("Found non-external foreground object, even though these should always be external! Skipping.");
-                    continue;
-                }
-                self.collector
-                    .collect_download(&mut fg_object["image"], None, Some(true), None);
-            }
+            self.collect_place_objects(&mut place["foreground_objects"])?;
         }
+        Ok(())
+    }
 
-        // Download the popups.
+    /// Collects the assets used in the given [place] objects.
+    fn collect_place_objects(&mut self, place: &mut Value) -> Result<(), anyhow::Error> {
+        for object in place
+            .as_array_mut()
+            .map(|x| x.iter_mut().filter_map(|y| y.as_object_mut()))
+            .context("Background/foreground objects must be in an array!")?
+        {
+            if !object["external"]
+                .as_bool()
+                .or_else(|| object["external"].as_i64().map(|x| x == 1))
+                .unwrap_or(false)
+            {
+                warn!("Found non-external foreground/background object, even though these should always be external! Skipping.");
+                continue;
+            }
+            self.collector
+                .collect_download(&mut object["image"], None, Some(true), None);
+        }
+        Ok(())
+    }
+
+    /// Collects the popups used in the case.
+    fn collect_popups(
+        &mut self,
+        data: &mut serde_json::Map<String, Value>,
+        paths: &SitePaths,
+    ) -> Result<(), anyhow::Error> {
         for popup in data["popups"]
             .as_array_mut()
             .unwrap()
@@ -609,8 +623,70 @@ impl AssetDownloader {
             );
             popup["external"] = Value::Bool(true);
         }
+        Ok(())
+    }
 
-        // Download the music.
+    /// Collects the voice assets used in the case (which are just all voice assets, since there
+    /// are no custom voices).
+    fn collect_voices(&mut self, paths: &SitePaths) {
+        const VOICE_EXT: [&str; 3] = ["opus", "wav", "mp3"];
+        for i in 1..=3 {
+            for ext in VOICE_EXT {
+                self.collector.collect_download(
+                    &mut Value::String(format!("voice_singleblip_{i}.{ext}")),
+                    Some(paths.voice_path()),
+                    Some(false),
+                    None,
+                );
+            }
+        }
+    }
+
+    /// Collects the psyche lock assets used in the case.
+    fn collect_psyche_locks(
+        &mut self,
+        data: &mut serde_json::Map<String, Value>,
+        site_data: &mut SiteData,
+    ) {
+        // To download psyche locks, we first need to determine the maximum number of them.
+        let max_locks = data["scenes"]
+            .as_array()
+            .expect("scenes must be array")
+            .iter()
+            .filter_map(|x| x.as_object())
+            .flat_map(|x| x["dialogues"].as_array().expect("dialogues must be array"))
+            .filter_map(|x| x.as_object())
+            .map(|x| x["locks"].as_object().expect("locks must be object"))
+            .map(|x| {
+                x["locks_to_display"]
+                    .as_array()
+                    .expect("locks_to_display must be array")
+            })
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0)
+            .try_into()
+            .expect("Too many psyche locks!");
+
+        if max_locks > 0 {
+            const LOCK_NAMES: [&str; 4] = [
+                "fg_chains_appear",
+                "jfa_lock_appears",
+                "jfa_lock_explodes",
+                "fg_chains_disappear",
+            ];
+            for lock in LOCK_NAMES {
+                self.collect_psyche_locks_file(lock, max_locks, site_data);
+            }
+        }
+    }
+
+    /// Collects the music assets used in the case.
+    fn collect_music(
+        &mut self,
+        data: &mut serde_json::Map<String, Value>,
+        paths: &SitePaths,
+    ) -> Result<(), anyhow::Error> {
         for music in data["music"]
             .as_array_mut()
             .unwrap()
@@ -628,7 +704,15 @@ impl AssetDownloader {
             );
             music["external"] = Value::Bool(true);
         }
-        // Download the sound.
+        Ok(())
+    }
+
+    /// Collects the sound assets used in the case.
+    fn collect_sounds(
+        &mut self,
+        data: &mut serde_json::Map<String, Value>,
+        paths: &SitePaths,
+    ) -> Result<(), anyhow::Error> {
         for sound in data["sounds"]
             .as_array_mut()
             .unwrap()
@@ -646,52 +730,7 @@ impl AssetDownloader {
             );
             sound["external"] = Value::Bool(true);
         }
-
-        // Download the voices. These are not present in the trial data, since there are no custom
-        // voices.
-        const VOICE_EXT: [&str; 3] = ["opus", "wav", "mp3"];
-        for i in 1..=3 {
-            for ext in VOICE_EXT {
-                self.collector.collect_download(
-                    &mut Value::String(format!("voice_singleblip_{i}.{ext}")),
-                    Some(paths.voice_path()),
-                    Some(false),
-                    None,
-                );
-            }
-        }
-
-        // Finally, we need to download psyche-locks. For this, we first need to determine the
-        // maximum number of them.
-        let max_locks = data["scenes"]
-            .as_array()
-            .expect("scenes must be array")
-            .iter()
-            .filter_map(|x| x.as_object())
-            .flat_map(|x| x["dialogues"].as_array().expect("dialogues must be array"))
-            .filter_map(|x| x.as_object())
-            .map(|x| x["locks"].as_object().expect("locks must be object"))
-            .map(|x| {
-                x["locks_to_display"]
-                    .as_array()
-                    .expect("locks_to_display must be array")
-            })
-            .map(|x| x.len())
-            .max()
-            .unwrap_or(0) as u8;
-        if max_locks > 0 {
-            const LOCK_NAMES: [&str; 4] = [
-                "fg_chains_appear",
-                "jfa_lock_appears",
-                "jfa_lock_explodes",
-                "fg_chains_disappear",
-            ];
-            for lock in LOCK_NAMES {
-                self.download_psyche_locks(site_data, lock, max_locks);
-            }
-        }
-
-        Ok(self.collector.get_unique_downloads())
+        Ok(())
     }
 
     /// Downloads the given collected (possibly faulty) [downloads] in parallel.
@@ -714,9 +753,7 @@ impl AssetDownloader {
             }
             error!(
                 "Could not download asset at {}: {err}{}",
-                asset
-                    .map(|x| x.url)
-                    .unwrap_or(String::from("[UNKNOWN URL]")),
+                asset.map_or(String::from("[UNKNOWN URL]"), |x| x.url),
                 if self.args.continue_on_asset_error {
                     " (continuing anyway)"
                 } else {
@@ -728,5 +765,34 @@ impl AssetDownloader {
             }
         }
         Ok(())
+    }
+
+    /// Returns the default sprites that are actually used in the case,
+    /// based on the given [profiles] and [`used_sprites`].
+    fn get_used_default_sprites(
+        profiles: &Value,
+        used_sprites: Vec<(i64, i64)>,
+    ) -> Vec<(&str, i64)> {
+        let id_profiles: HashMap<i64, &str> = profiles
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x.as_object())
+            .map(|x| {
+                (
+                    x["id"].as_i64().expect("profile ID must be number"),
+                    x["base"].as_str().expect("profile base must be string"),
+                )
+            })
+            .collect();
+        let used_default_sprites = used_sprites
+            .into_iter()
+            // Only non-positive sprite IDs are default sprites.
+            .filter(|x| x.1 < 0)
+            .map(|x| (id_profiles[&x.0], -x.1))
+            .unique()
+            .collect_vec();
+        trace!("{:?}", used_default_sprites);
+        used_default_sprites
     }
 }
