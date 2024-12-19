@@ -22,9 +22,12 @@ use log::{debug, error, info, warn, Level};
 use reqwest::Client;
 use serde::Serialize;
 use std::borrow::Cow;
-use std::io::{self, IsTerminal};
+use std::io::{stdin, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tokio::{fs, io};
+use tokio_stream::wrappers::ReadDirStream;
+use tokio_stream::StreamExt;
 
 #[cfg(debug_assertions)]
 use clap_verbosity_flag::DebugLevel;
@@ -191,7 +194,7 @@ impl MainContext {
     }
 
     /// Creates a new main context from the given [args].
-    fn new(args: Args) -> MainContext {
+    async fn new(args: Args) -> MainContext {
         let case_ids = args.cases.clone();
 
         let output = args.output.clone().unwrap_or_else(|| {
@@ -203,7 +206,14 @@ impl MainContext {
                 PathBuf::from(".")
             }
         });
-        let output_was_empty = !std::fs::read_dir(&output).is_ok_and(|mut x| x.next().is_some());
+        let output_was_empty = if let Ok(rd) = tokio::fs::read_dir(&output).await {
+            ReadDirStream::new(rd)
+                .next()
+                .await
+                .is_none_or(|x| x.is_err())
+        } else {
+            true
+        };
         let multi_progress = MultiProgress::new();
         let http_handling = args.http_handling.clone();
         MainContext {
@@ -260,32 +270,36 @@ impl MainContext {
     ///
     /// If [`only_ours`] is true, the directory will only be removed if it was empty before we started.
     /// For multiple cases, only the individual case directories will be removed.
-    fn cleanup_data(&self, only_ours: bool) {
+    async fn cleanup_data(&self, only_ours: bool) {
         assert_ne!(self.output, PathBuf::from("/"), "We will not remove /!");
         if self.case_ids.len() == 1 {
             // We will simply remove everything under the folder, or the file, if the output is a file.
             if Path::new(&self.output).is_file() {
-                std::fs::remove_file(&self.output).unwrap_or_else(|e| {
-                    if let io::ErrorKind::NotFound = e.kind() {
-                        // Ignore if already deleted.
-                    } else {
-                        error!(
-                            "Could not remove file {}: {e}. Please remove it manually.",
-                            self.output.display()
-                        );
-                    }
-                });
+                tokio::fs::remove_file(&self.output)
+                    .await
+                    .unwrap_or_else(|e| {
+                        if let io::ErrorKind::NotFound = e.kind() {
+                            // Ignore if already deleted.
+                        } else {
+                            error!(
+                                "Could not remove file {}: {e}. Please remove it manually.",
+                                self.output.display()
+                            );
+                        }
+                    });
             } else if (!only_ours || self.output_was_empty) && self.output != PathBuf::from(".") {
-                std::fs::remove_dir_all(&self.output).unwrap_or_else(|e| {
-                    if let io::ErrorKind::NotFound = e.kind() {
-                        // Ignore if already deleted.
-                    } else {
-                        error!(
-                            "Could not remove directory {}: {e}. Please remove it manually.",
-                            self.output.display()
-                        );
-                    }
-                });
+                tokio::fs::remove_dir_all(&self.output)
+                    .await
+                    .unwrap_or_else(|e| {
+                        if let io::ErrorKind::NotFound = e.kind() {
+                            // Ignore if already deleted.
+                        } else {
+                            error!(
+                                "Could not remove directory {}: {e}. Please remove it manually.",
+                                self.output.display()
+                            );
+                        }
+                    });
             } else {
                 warn!(
                     "Directory {} already contained files, will not clean up directory.",
@@ -296,23 +310,28 @@ impl MainContext {
             // Otherwise, we will remove the case ID directories.
             for case_id in &self.case_ids {
                 let case_dir = self.output.join(case_id.to_string());
-                std::fs::remove_dir_all(&case_dir).unwrap_or_else(|e| {
-                    if let io::ErrorKind::NotFound = e.kind() {
-                        // Ignore if already deleted.
-                    } else {
-                        error!(
-                            "Could not remove directory {}: {e}. Please remove it manually.",
-                            case_dir.display()
-                        );
-                    }
-                });
+                tokio::fs::remove_dir_all(&case_dir)
+                    .await
+                    .unwrap_or_else(|e| {
+                        if let io::ErrorKind::NotFound = e.kind() {
+                            // Ignore if already deleted.
+                        } else {
+                            error!(
+                                "Could not remove directory {}: {e}. Please remove it manually.",
+                                case_dir.display()
+                            );
+                        }
+                    });
             }
         }
     }
 
     /// Cleans up the data if the given [res] is an error, otherwise does nothing.
-    fn clean_on_fail(&self, res: Result<()>) -> Result<()> {
-        res.inspect_err(|_| self.cleanup_data(true))
+    async fn clean_on_fail(&self, res: Result<()>) -> Result<()> {
+        if res.is_err() {
+            self.cleanup_data(true).await;
+        }
+        res
     }
 
     /// Retrieves the case information for all cases and possibly their sequences.
@@ -366,7 +385,7 @@ impl MainContext {
 
     /// Asks the user whether they want to download the whole sequence.
     fn ask_sequence(&self, case: &Case, sequence: &Sequence) -> bool {
-        if std::io::stdin().is_terminal() {
+        if stdin().is_terminal() {
             let result = self.pb.suspend(|| {
                 println!(
                     "The case \"{}\" is part of a sequence: {sequence}.",
@@ -421,20 +440,20 @@ impl MainContext {
                 self.output.clone()
             };
             // May need to create the directory first.
-            std::fs::create_dir_all(output.join("assets"))?;
+            fs::create_dir_all(output.join("assets")).await?;
             handler.set_output(output);
-            downloads.append(&mut handler.collect_case_data(case, site_data)?);
+            downloads.append(&mut handler.collect_case_data(case, site_data).await?);
         }
         // Then, download all assets at once.
         let result = handler.download_collected(&pb, downloads).await;
         self.finish_progress(&pb, "Case data downloaded.");
-        self.clean_on_fail(result)
+        self.clean_on_fail(result).await
     }
 
     /// Retrieves the player for cases.
     async fn retrieve_player(&mut self) -> Result<()> {
         let result = self.player.as_mut().unwrap().retrieve_player().await;
-        self.clean_on_fail(result)
+        self.clean_on_fail(result).await
     }
 
     /// Retrieves the scripts (i.e., JavaScript modules) for the player.
@@ -442,13 +461,13 @@ impl MainContext {
         let pb = self.add_progress(0);
         let result = self.player.as_mut().unwrap().retrieve_scripts(&pb).await;
         self.finish_progress(&pb, "Player scripts retrieved.");
-        self.clean_on_fail(result)
+        self.clean_on_fail(result).await
     }
 
     /// Transforms the player blocks for the given [case] to point to offline assets.
-    fn transform_player_blocks(&mut self, case: &Case) -> Result<()> {
+    async fn transform_player_blocks(&mut self, case: &Case) -> Result<()> {
         let result = self.player.as_mut().unwrap().transform_player(case);
-        self.clean_on_fail(result)
+        self.clean_on_fail(result).await
     }
 
     /// Retrieves additional sources for the player.
@@ -464,17 +483,18 @@ impl MainContext {
             .retrieve_player_misc_sources(&pb)
             .await;
         self.finish_progress(&pb, "All player sources downloaded.");
-        self.clean_on_fail(result)
+        self.clean_on_fail(result).await
     }
 
     /// Output the finished player for the case to [`output_path`].
-    fn output_player(&self, output_path: &Path) -> Result<()> {
+    async fn output_player(&self, output_path: &Path) -> Result<()> {
         let output = output_path.join("index.html");
-        std::fs::create_dir_all(output.parent().unwrap())?;
-        std::fs::write(
+        fs::create_dir_all(output.parent().unwrap()).await?;
+        fs::write(
             &output,
             self.player.as_ref().unwrap().content.as_ref().unwrap(),
         )
+        .await
         .with_context(|| {
             format!(
                 "Could not write player to file {}. Please check your permissions.",
@@ -493,13 +513,13 @@ async fn main() -> Result<()> {
         .format_timestamp(None)
         .filter_level(args.verbose.log_level_filter())
         .init();
-    let mut ctx = MainContext::new(args);
+    let mut ctx = MainContext::new(args).await;
 
     // Empty directories are fine if they exist already.
     if ctx.output.exists() && ctx.output.read_dir()?.next().is_some() {
         if ctx.ctx().args.remove_existing {
             info!("Output exists already, deleting...");
-            ctx.cleanup_data(false);
+            ctx.cleanup_data(false).await;
         } else if ctx.ctx().args.cases.len() == 1
             || ctx
                 .ctx()
@@ -566,13 +586,13 @@ async fn main() -> Result<()> {
             ),
         );
         ctx.player.as_mut().unwrap().restore(original_state.clone());
-        ctx.transform_player_blocks(&case)?;
+        ctx.transform_player_blocks(&case).await?;
         let output_path = if only_one {
             &ctx.output
         } else {
             &ctx.output.join(case.id().to_string())
         };
-        ctx.output_player(output_path)?;
+        ctx.output_player(output_path).await?;
     }
 
     let message = if only_one {

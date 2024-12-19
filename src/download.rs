@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use bytes::Bytes;
+use futures::future::join_all;
 use futures::{stream, FutureExt, StreamExt};
 use indicatif::ProgressBar;
 use itertools::Itertools;
@@ -15,6 +16,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use tokio::fs;
 
 use crate::constants::re::REMOVE_QUERY_PARAMETERS_REGEX;
 use crate::constants::AAONLINE_BASE;
@@ -334,22 +336,24 @@ impl<'a> AssetDownloader<'a> {
     async fn download_asset(&self, asset: &AssetDownload) -> Result<PathBuf> {
         let (_, content) =
             download_url(&asset.url, &self.ctx.args.http_handling, &self.ctx.client).await?;
-        Self::write_asset(&asset.path, &content).map(|()| asset.path.clone())
+        Self::write_asset(&asset.path, &content)
+            .await
+            .map(|()| asset.path.clone())
     }
 
     /// Writes the given [content] to the given [path].
-    fn write_asset(path: &PathBuf, content: &[u8]) -> Result<()> {
+    async fn write_asset(path: &PathBuf, content: &[u8]) -> Result<()> {
         // Write to file. We may need to create the containing directories first.
         debug!("Writing {}...", path.display());
         let dir = path.parent().expect("no parent directory in path");
         assert!(dir.ends_with("assets"));
-        std::fs::create_dir_all(dir).with_context(|| {
+        fs::create_dir_all(dir).await.with_context(|| {
             format!(
                 "Could not create directory {}. Please check your permissions.",
                 dir.display()
             )
         })?;
-        std::fs::write(path, content).with_context(|| {
+        fs::write(path, content).await.with_context(|| {
             format!(
                 "Could not write file to {}. Please check your permissions.",
                 path.display()
@@ -363,7 +367,7 @@ impl<'a> AssetDownloader<'a> {
     ///
     /// This will attempt to create symbolic links for the psyche lock files, but will fall back to
     /// using copies if symbolic links are not supported. Panics if that also doesn't work.
-    fn collect_psyche_locks_file(&mut self, name: &str, max_locks: u8, site_data: &SiteData) {
+    async fn collect_psyche_locks_file(&mut self, name: &str, max_locks: u8, site_data: &SiteData) {
         let mut file_value = Value::String(name.to_string());
         self.collector.collect_download(
             &mut file_value,
@@ -376,35 +380,47 @@ impl<'a> AssetDownloader<'a> {
         if let Ok(asset) = last {
             let original_path = &asset.path;
             let original_name = original_path.file_name().expect("must have file path");
-            for i in 1..=max_locks {
-                let new_path = original_path.with_file_name(format!("{name}_{i}.gif"));
-                if let Err(e) = Self::symlink(original_name, &new_path) {
-                    warn!("Could not create symbolic link: {e}. Copying file instead.");
-                    std::fs::copy(original_path, &new_path).expect("Could not copy file");
-                }
-            }
+            join_all(
+                (1..=max_locks)
+                    .map(|i| original_path.with_file_name(format!("{name}_{i}.gif")))
+                    .map(|p| async move { (p.clone(), Self::symlink(original_name, &p).await) })
+                    .map(|future| async move {
+                        let (p, result) = future.await;
+                        if let Err(e) = result {
+                            warn!("Could not create symbolic link: {e}. Copying file instead.");
+                            fs::copy(original_path, p)
+                                .await
+                                .expect("Could not copy file");
+                        }
+                    }),
+            )
+            .await;
         }
     }
 
-    // TODO: Use async version of file operations too.
-
     /// Creates a symbolic link from the given [orig] to the given [target].
     #[cfg(unix)]
-    fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(orig: P, target: Q) -> Result<(), std::io::Error> {
-        std::os::unix::fs::symlink(orig, target)
+    async fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(
+        orig: P,
+        target: Q,
+    ) -> Result<(), std::io::Error> {
+        tokio::fs::symlink(orig, target).await
     }
 
     /// Creates a symbolic link from the given [orig] to the given [target].
     #[cfg(windows)]
-    fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(orig: P, target: Q) -> Result<(), std::io::Error> {
-        std::os::windows::fs::symlink_file(orig, target)
+    async fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(
+        orig: P,
+        target: Q,
+    ) -> Result<(), std::io::Error> {
+        tokio::fs::symlink_file(orig, target).await
     }
 
     /// Collects the case asset download requests for the given [case] and [`site_data`], returning
     /// the (possibly faulty) requests in a vector.
     ///
     /// *Note: This does not start the downloads yet!*
-    pub(crate) fn collect_case_data(
+    pub(crate) async fn collect_case_data(
         &mut self,
         case: &mut Case,
         site_data: &mut SiteData,
@@ -432,7 +448,7 @@ impl<'a> AssetDownloader<'a> {
 
         self.collect_voices(paths);
 
-        self.collect_psyche_locks(data, site_data);
+        self.collect_psyche_locks(data, site_data).await;
 
         Ok(self.collector.get_unique_downloads())
     }
@@ -660,7 +676,7 @@ impl<'a> AssetDownloader<'a> {
     }
 
     /// Collects the psyche lock assets used in the case.
-    fn collect_psyche_locks(
+    async fn collect_psyche_locks(
         &mut self,
         data: &mut serde_json::Map<String, Value>,
         site_data: &mut SiteData,
@@ -689,7 +705,8 @@ impl<'a> AssetDownloader<'a> {
                 "fg_chains_disappear",
             ];
             for lock in LOCK_NAMES {
-                self.collect_psyche_locks_file(lock, max_locks, site_data);
+                self.collect_psyche_locks_file(lock, max_locks, site_data)
+                    .await;
             }
         }
     }
