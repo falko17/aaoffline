@@ -12,7 +12,9 @@ pub(crate) mod re {
         LazyLock::new(|| Regex::new(r"(?s)<\?php(.*?)\?>").unwrap());
 
     pub(crate) static CASE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"https?://(?:www\.)?aaonline\.fr/player\.php\?trial_id=(\d+)").unwrap()
+        // Old URL format: http://aceattorney.sparklin.org/jeu.php?id_proces=TRIAL_ID
+        // New URL format: https://aaonline.fr/player.php?trial_id=TRIAL_ID
+        Regex::new(r"https?://(?:(?:www\.)?aaonline\.fr/player\.php\?trial_id|aceattorney\.sparklin\.org/jeu\.php\?id_proces)=(\d+)").unwrap()
     });
 
     pub(crate) static TRIAL_INFORMATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
