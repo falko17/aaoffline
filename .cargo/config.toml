@@ -1,0 +1,3 @@
+[env]
+RSTEST_TIMEOUT = "300"
+RUST_TEST_THREADS = "1"
