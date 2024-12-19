@@ -9,6 +9,7 @@ use colored::Colorize;
 use const_format::formatcp;
 use log::{debug, trace};
 
+use anyhow::anyhow;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,6 +20,7 @@ use std::fmt::Display;
 
 use crate::constants::re;
 use crate::constants::AAONLINE_BASE;
+use crate::data::RegexNotMatched;
 
 /// Represents the information of a case.
 #[serde_with::serde_as]
@@ -138,7 +140,15 @@ impl Case {
     .text().await?;
 
         let case_information =
-            super::retrieve_escaped_json(&re::TRIAL_INFORMATION_REGEX, &case_script)?;
+            super::retrieve_escaped_json(&re::TRIAL_INFORMATION_REGEX, &case_script).map_err(
+                |x| {
+                    if x.root_cause().is::<RegexNotMatched>() {
+                        anyhow!("The case with given ID {case_id} could not be found!")
+                    } else {
+                        x
+                    }
+                },
+            )?;
 
         let case_data = super::retrieve_escaped_json(&re::TRIAL_DATA_REGEX, &case_script)?;
         debug!("{:?}", case_information);
