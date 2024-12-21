@@ -68,6 +68,7 @@ enum DownloadSequence {
 /// You can also directly pass the ID instead.
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, arg_required_else_help(true))]
+#[allow(clippy::struct_excessive_bools)]
 struct Args {
     /// The URL to the case, or its ID. May be passed multiple times.
     #[arg(required=true, num_args = 1.., value_parser = Self::accept_case)]
@@ -106,6 +107,13 @@ struct Args {
     #[arg(short('s'), long, value_enum, default_value_t)]
     sequence: DownloadSequence,
 
+    /// Whether to output only a single HTML file, with the assets embedded as data URLs.
+    ///
+    /// WARNING: Browsers may not like HTML files very much that are
+    /// multiple dozens of megabytes large. Your mileage may vary.
+    #[arg(short('1'), long, default_value_t = false)]
+    one_html_file: bool,
+
     /// How to handle insecure HTTP requests.
     #[arg(long, value_enum, default_value_t)]
     http_handling: HttpHandling,
@@ -128,7 +136,6 @@ struct Args {
     #[cfg(debug_assertions)]
     #[command(flatten)]
     verbose: clap_verbosity_flag::Verbosity<DebugLevel>,
-    // TODO: Offer option for single HTML file
 }
 
 impl Args {
@@ -432,7 +439,10 @@ impl MainContext {
         let original_default_places = site_data.default_data.default_places.clone();
         let mut downloads: Vec<Result<_>> = vec![];
         for case in cases.iter_mut() {
-            site_data.default_data.default_places = original_default_places.clone();
+            site_data
+                .default_data
+                .default_places
+                .clone_from(&original_default_places);
             let output = if multiple {
                 // Case data needs to be put into the directory of that case.
                 self.output.join(PathBuf::from(case.id().to_string()))
@@ -445,7 +455,9 @@ impl MainContext {
             downloads.append(&mut handler.collect_case_data(case, site_data).await?);
         }
         // Then, download all assets at once.
-        let result = handler.download_collected(&pb, downloads).await;
+        let result = handler
+            .download_collected(&pb, downloads, cases, site_data)
+            .await;
         self.finish_progress(&pb, "Case data downloaded.");
         self.clean_on_fail(result).await
     }

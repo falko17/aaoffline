@@ -1,7 +1,7 @@
 //! Contains data model related to the case player and its scripts.
 
 use crate::constants::{re, AAONLINE_BASE, BITBUCKET_URL};
-use crate::download::{download_url, make_data_uri};
+use crate::download::{download_url, make_data_url};
 use crate::transform::php;
 use crate::GlobalContext;
 use anyhow::{Context, Result};
@@ -505,7 +505,7 @@ impl Player {
                 replacements.push(PlayerTransformation::new(
                     target,
                     group.range(),
-                    make_data_uri(&content)?,
+                    make_data_url(&content),
                 ));
             } else if let Err(e) = result {
                 warn!("Could not download asset, skipping: {e}");
@@ -539,15 +539,21 @@ impl Player {
                     output,
                 ));
                 // We need to use the HTML5 audio option for Howler, or we'll run into CORS errors.
-                // (See #1 for why some users might still want to disable HTML5 audios.)
-                let preload_pos = scripts
-                    .find(PRELOAD)
-                    .context("preload option not present")?;
-                replacements.push(PlayerTransformation::new(
-                    TransformationTarget::Scripts,
-                    preload_pos + PRELOAD.len()..preload_pos + PRELOAD.len(),
-                    format!(", html5: {}", !self.scripts.ctx.args.disable_html5_audio),
-                ));
+                // See #1 for why some users might still want to disable HTML5 audios.
+                // We also don't want to do this if we use data URLs for everything—there can't be
+                // any CORS errors then.
+                if !self.scripts.ctx.args.one_html_file {
+                    let preload_pos = scripts
+                        .find(PRELOAD)
+                        .context("preload option not present")?;
+                    replacements.push(PlayerTransformation::new(
+                        TransformationTarget::Scripts,
+                        preload_pos + PRELOAD.len()..preload_pos + PRELOAD.len(),
+                        format!(", html5: {}", !self.scripts.ctx.args.disable_html5_audio),
+                    ));
+                } else if self.scripts.ctx.args.disable_html5_audio {
+                    warn!("--disable-html5-audio has no effect when used together with --one-html-file (-1), as HTML5 audio is disabled anyway.");
+                }
             } else if let Err(e) = result {
                 warn!("Could not download Howler.js, skipping: {e}");
             }
@@ -559,8 +565,21 @@ impl Player {
         // getVoiceUrl function to point to our local files.
         if let Some(voice) = re::VOICE_REGEX.captures(scripts) {
             let group = voice.get(1).unwrap();
-            let output =
-                String::from("return 'assets/voice_singleblip_' + (-voice_id) + '.' + ext;");
+            let output = if self.scripts.ctx.args.one_html_file {
+                // We actually need to use the data URLs we collected earlier.
+                // Unfortunately, the voice blips are retrieved dynamically, so we need to write
+                // some JavaScript here to statically return one of our data URLs:
+                let mut voice_js = String::new();
+                for ((id, ext), url) in &self.site_data.default_data.default_voice_urls {
+                    voice_js +=
+                        &format!("if (-voice_id === {id} && ext === '{ext}') return '{url}';\n");
+                }
+                // Just return an empty audio URL otherwise.
+                voice_js += "return 'data:audio/wav;base64,'";
+                voice_js
+            } else {
+                String::from("return 'assets/voice_singleblip_' + (-voice_id) + '.' + ext;")
+            };
             replacements.push(PlayerTransformation::new(
                 TransformationTarget::Scripts,
                 group.range(),
@@ -573,8 +592,21 @@ impl Player {
         // We need to do the same for the default sprites.
         if let Some(default_sprites) = re::DEFAULT_SPRITES_REGEX.captures(scripts) {
             let group = default_sprites.get(1).unwrap();
-            let output =
-                String::from("return 'assets/' + base + '_' + sprite_id + '_' + status + '.gif';");
+            let output = if self.scripts.ctx.args.one_html_file {
+                // We actually need to use the data URLs we collected earlier.
+                // Similar to the voice blips, we need to write some JavaScript here to handle this.
+                let mut sprite_js = String::new();
+                for ((base, sprite_id, status), url) in
+                    &self.site_data.default_data.default_sprite_urls
+                {
+                    sprite_js +=
+                        &format!("if (base === '{base}' && sprite_id === {sprite_id} && status === '{status}') return '{url}';\n");
+                }
+                sprite_js += "return 'data:image/gif;base64,'";
+                sprite_js
+            } else {
+                String::from("return 'assets/' + base + '_' + sprite_id + '_' + status + '.gif';")
+            };
             replacements.push(PlayerTransformation::new(
                 TransformationTarget::Scripts,
                 group.range(),
@@ -590,7 +622,7 @@ impl Player {
         // parameter "?id=" is appended to the lock request, this is later used to differentiate
         // individual lock images (even though the underyling image is the same). We cannot use
         // query parameters like this for static HTML files.
-        // As a workaround, we'll copy (more precisely, softlink) each psyche lock file nine times
+        // As a workaround, we'll copy (more precisely, symlink) each psyche lock file nine times
         // (assuming there'll never be more than nine psyche locks at the same time).
         if psy_caps.is_empty() {
             warn!("Could not find psyche locks in scripts, skipping.");
@@ -603,10 +635,27 @@ impl Player {
                     lock.name("name").unwrap().as_str()
                 };
                 let path = lock.name("path").unwrap();
-                let replacement = format!(
-                    "'assets/{name}_'{} + '.gif'",
-                    lock.name("id").unwrap().as_str()
-                );
+                // Note that this isn't the pure ID, but rather something like `+ id`.
+                let lock_id = lock.name("id").unwrap().as_str();
+                let replacement = if self.scripts.ctx.args.one_html_file {
+                    // Once again, we need to insert our data URLs here.
+                    // However, we have a conundrum related to the problem mentioned in the
+                    // paragraph above: We cannot copy any files around and give them different
+                    // names, as there *are no* files. We need some way to make the data URLs
+                    // unique, even though they represent the same data. So what we'll do
+                    // here is a very ugly trick: Browsers seem to ignore the MIME type in the data
+                    // URLs, so we'll append the ID after the MIME type and thus create a
+                    // "unique" "file" for every psyche lock.
+                    if let Some(data_url) = &self.site_data.default_data.psyche_lock_urls.get(name)
+                    {
+                        format!("'{}'", data_url.replace(';', &format!("'{lock_id} + ';")))
+                    } else {
+                        // Case doesn't use any psyche-locks, this doesn't matter.
+                        String::new()
+                    }
+                } else {
+                    format!("'assets/{name}_'{lock_id} + '.gif'",)
+                };
                 replacements.push(PlayerTransformation::new(target, path.range(), replacement));
             }
         }
@@ -656,7 +705,7 @@ impl Player {
             )
             .await;
             if let Ok((_, content)) = result {
-                replacements.push((group.range(), make_data_uri(&content)?));
+                replacements.push((group.range(), make_data_url(&content)));
             } else if let Err(e) = result {
                 warn!("Could not download CSS dependency, skipping: {e}");
             }

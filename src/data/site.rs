@@ -16,12 +16,24 @@ use crate::constants::{re, AAONLINE_BASE, BRIDGE_URL};
 ///
 /// Note that this does not contain all default data, only the data that is relevant to the
 /// retrieval and offline transformation process.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct DefaultData {
     /// Names of default profiles that have a startup animation.
     pub(crate) default_profiles_startup: HashSet<String>,
     /// Map from (non-positive) place ID to the corresponding deserialized place.
     pub(crate) default_places: HashMap<i64, Value>,
+    /// Map from voice ID and extension to data URL.
+    ///
+    /// May be empty if we are not collecting data URLs.
+    pub(crate) default_voice_urls: HashMap<(u64, String), String>,
+    /// Map from character base, sprite ID, and kind to data URL.
+    ///
+    /// May be empty if we are not collecting data URLs.
+    pub(crate) default_sprite_urls: HashMap<(String, i64, String), String>,
+    /// Map from psyche lock filename to data URL.
+    ///
+    /// May be empty if we are not collecting data URLs.
+    pub(crate) psyche_lock_urls: HashMap<String, String>,
 }
 
 impl DefaultData {
@@ -41,6 +53,7 @@ impl DefaultData {
         Ok(DefaultData {
             default_profiles_startup,
             default_places,
+            ..Default::default()
         })
     }
 

@@ -189,14 +189,20 @@ fn test_non_existing(mut cmd: Cmd, #[values("0", "999999", "9999999999999999")] 
 }
 
 #[apply(example_cases)]
-fn test_single(mut cmd: Cmd, case: &str) {
+fn test_single(mut cmd: Cmd, case: &str, #[values(true, false)] one_file: bool) {
+    if one_file {
+        cmd.cmd.arg("-1");
+    }
     cmd.cmd.arg(case).assert().success();
     verify_with_browser(cmd.path_as_str(), None).unwrap();
 }
 
 // These are tricky to get right, so we'll add a special test for these.
 #[rstest]
-fn test_psyche_locks(mut cmd: Cmd) {
+fn test_psyche_locks(mut cmd: Cmd, #[values(true, false)] one_file: bool) {
+    if one_file {
+        cmd.cmd.arg("-1");
+    }
     cmd.cmd.arg(PSYCHE_LOCK_TEST).assert().success();
     verify_with_browser(cmd.path_as_str(), Some(PSYCHE_LOCK_SAVE)).unwrap();
 }
