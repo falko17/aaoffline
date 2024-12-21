@@ -427,6 +427,7 @@ impl<'a> AssetDownloader<'a> {
     ) -> Result<Vec<Result<AssetDownload>>> {
         let paths = &site_data.site_paths;
         let used_sprites = case.get_used_sprites();
+        let used_places = case.get_used_places();
         let data = case
             .case_data
             .as_object_mut()
@@ -438,7 +439,9 @@ impl<'a> AssetDownloader<'a> {
 
         self.collect_evidence(data, paths);
 
-        self.collect_places(&mut site_data.default_data.default_places, data, paths)?;
+        let used_default_places =
+            Self::get_used_default_places(&mut site_data.default_data.default_places, &used_places);
+        self.collect_places(used_default_places, data, paths)?;
 
         self.collect_popups(data, paths)?;
 
@@ -565,21 +568,15 @@ impl<'a> AssetDownloader<'a> {
     /// Collects the place assets used in the case.
     fn collect_places(
         &mut self,
-        default_places: &mut Value,
+        used_default_places: Vec<&mut Value>,
         data: &mut serde_json::Map<String, Value>,
         paths: &SitePaths,
     ) -> Result<(), anyhow::Error> {
-        // We need to download the default places as well.
-        let default_places = default_places
-            .as_object_mut()
-            .context("Default places must be map")?
-            .values_mut();
-
         for place in data["places"]
             .as_array_mut()
             .unwrap()
             .iter_mut()
-            .chain(default_places)
+            .chain(used_default_places)
             .filter_map(|x| x.as_object_mut())
         {
             // Download place background itself.
@@ -797,8 +794,20 @@ impl<'a> AssetDownloader<'a> {
         Ok(())
     }
 
-    /// Returns the default sprites that are actually used in the case,
-    /// based on the given [profiles] and [`used_sprites`].
+    /// Returns the default places that are actually used in the case.
+    fn get_used_default_places<'b>(
+        default_places: &'b mut HashMap<i64, Value>,
+        used_places: &HashSet<i64>,
+    ) -> Vec<&'b mut Value> {
+        default_places
+            .iter_mut()
+            .filter(|x| used_places.contains(x.0))
+            .map(|x| x.1)
+            .collect()
+    }
+
+    /// Returns the default sprites that are actually used in the case (as character base and
+    /// sprite ID), based on the given [profiles] and [`used_sprites`].
     fn get_used_default_sprites(
         profiles: &Value,
         used_sprites: Vec<(i64, i64)>,
