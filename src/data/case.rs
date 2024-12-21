@@ -16,6 +16,7 @@ use serde_json::Value;
 use serde_with::formats::Flexible;
 use serde_with::TimestampSeconds;
 
+use std::collections::HashSet;
 use std::fmt::Display;
 
 use crate::constants::re;
@@ -160,14 +161,14 @@ impl Case {
         })
     }
 
-    /// Returns a list of character and sprite IDs for default sprites used in this case.
+    /// Returns a list of character and sprite IDs for sprites used in this case.
     pub(crate) fn get_used_sprites(&self) -> Vec<(i64, i64)> {
         trace!("{}", self.case_data);
         // We are filtering out numbers here because for some reason, the arrays always
         // contain a "0: 0" element.
         self.case_data
             .as_object()
-            .expect("Trial data must be object")["frames"]
+            .expect("Case data must be object")["frames"]
             .as_array()
             .expect("frames must be array")
             .iter()
@@ -192,6 +193,23 @@ impl Case {
                         sprite_id.as_i64().expect("sprite_id must be integer"),
                     ))
                 }
+            })
+            .collect()
+    }
+
+    /// Returns a set of place IDs for places used in this case.
+    pub(crate) fn get_used_places(&self) -> HashSet<i64> {
+        self.case_data
+            .as_object()
+            .expect("Case data must be object")["frames"]
+            .as_array()
+            .expect("frames must be array")
+            .iter()
+            .filter(|x| !x.is_number())
+            .map(|x| {
+                x.as_object().expect("frame must be object")["place"]
+                    .as_i64()
+                    .expect("place in frame must be natural number")
             })
             .collect()
     }

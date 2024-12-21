@@ -8,7 +8,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::constants::{re, AAONLINE_BASE, BRIDGE_URL};
 
@@ -20,8 +20,8 @@ use crate::constants::{re, AAONLINE_BASE, BRIDGE_URL};
 pub(crate) struct DefaultData {
     /// Names of default profiles that have a startup animation.
     pub(crate) default_profiles_startup: HashSet<String>,
-    /// Deserialized default places.
-    pub(crate) default_places: Value,
+    /// Map from (non-positive) place ID to the corresponding deserialized place.
+    pub(crate) default_places: HashMap<i64, Value>,
 }
 
 impl DefaultData {
@@ -37,7 +37,7 @@ impl DefaultData {
         };
 
         let default_places =
-            super::retrieve_escaped_json::<Value>(&re::DEFAULT_PLACES_REGEX, module)?;
+            super::retrieve_escaped_json::<HashMap<i64, Value>>(&re::DEFAULT_PLACES_REGEX, module)?;
         Ok(DefaultData {
             default_profiles_startup,
             default_places,
