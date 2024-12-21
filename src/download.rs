@@ -62,15 +62,13 @@ pub(crate) async fn download_url(
     Ok((output, content))
 }
 
-/// Converts the given [data] to a base64 data URI.
-pub(crate) fn make_data_uri(data: &Bytes) -> Result<String> {
+/// Converts the given [data] to a base64 data URL.
+pub(crate) fn make_data_url(data: &Bytes) -> String {
     let mime = infer::get(data)
-        .context("Encountered data with unknown MIME type")?
-        .mime_type();
-    Ok(format!(
-        "data:{mime};base64,{}",
-        BASE64_STANDARD.encode(data)
-    ))
+        // Most browsers seem to handle "wrong" MIME types correctly in data URLs, anyway,
+        // so this doesn't really matter. Maybe I should get rid of `infer` altogether.
+        .map_or("application/octet-stream", |x| x.mime_type());
+    format!("data:{mime};base64,{}", BASE64_STANDARD.encode(data))
 }
 
 /// An asset download request.
@@ -82,6 +80,52 @@ pub(crate) struct AssetDownload {
     path: PathBuf,
     /// Whether to ignore inaccessible assets.
     ignore_inaccessible: bool,
+    /// A reference to the original JSON containing the path to this asset.
+    json_ref: JsonReference,
+    /// The data URL consisting of the asset data, if configured.
+    data_url: Option<String>,
+}
+
+#[derive(Debug, Hash, Clone, PartialEq, Eq)]
+struct JsonReference {
+    /// A JSON pointer (see [RFC 6901](https://datatracker.ietf.org/doc/html/rfc6901)) to the
+    /// referenced part of the original JSON.
+    pointer: String,
+    /// The document from which the JSON originally came from.
+    source: JsonSource,
+}
+
+#[derive(Debug, Hash, Clone, PartialEq, Eq)]
+enum JsonSource {
+    /// An asset in the case data. The inner value represents the case ID.
+    CaseData(u32),
+    /// A default place.
+    DefaultPlaces,
+    /// A default voice.
+    /// The inner values represent the ID and the extension, respectively.
+    DefaultVoices(u64, String),
+    /// A default sprite.
+    /// The inner values represent the base, sprite ID, and kind, respectively.
+    DefaultSprites(String, i64, String),
+    /// A psyche-lock file. The inner value represents the filename.
+    PsycheLock(String),
+}
+
+impl JsonReference {
+    fn new(source: JsonSource, pointer: String) -> JsonReference {
+        JsonReference { pointer, source }
+    }
+
+    fn for_case(case_id: u32, pointer: String) -> JsonReference {
+        JsonReference {
+            pointer,
+            source: JsonSource::CaseData(case_id),
+        }
+    }
+
+    fn concat_path(&self, path: &str) -> JsonReference {
+        JsonReference::new(self.source.clone(), format!("{}/{path}", self.pointer))
+    }
 }
 
 /// A downloader for case assets.
@@ -183,6 +227,7 @@ impl AssetCollector {
         default_extension: Option<&str>,
         filename: Option<&PathBuf>,
         ignore_inaccessible: bool,
+        json_ref: JsonReference,
     ) -> Result<AssetDownload> {
         let mut file = PathBuf::from(file_value.as_str().unwrap_or(&self.default_icon_url));
         if file.extension().is_none() {
@@ -230,6 +275,8 @@ impl AssetCollector {
             url,
             path,
             ignore_inaccessible,
+            json_ref,
+            data_url: None,
         })
     }
 
@@ -240,6 +287,7 @@ impl AssetCollector {
         path_components: Option<Vec<&str>>,
         external: Option<bool>,
         default_extension: Option<&str>,
+        json_ref: JsonReference,
     ) {
         self.collected.push(self.make_download(
             file_value,
@@ -248,6 +296,7 @@ impl AssetCollector {
             default_extension,
             None,
             false,
+            json_ref,
         ));
     }
 
@@ -260,6 +309,7 @@ impl AssetCollector {
         path_components: Option<Vec<&str>>,
         external: Option<bool>,
         ignore_inaccessible: bool,
+        json_ref: JsonReference,
     ) {
         self.collected.push(self.make_download(
             file_value,
@@ -268,6 +318,7 @@ impl AssetCollector {
             None,
             Some(name),
             ignore_inaccessible,
+            json_ref,
         ));
     }
 
@@ -314,31 +365,42 @@ impl<'a> AssetDownloader<'a> {
         &self,
         assets: Vec<AssetDownload>,
         pb: &ProgressBar,
-    ) -> Vec<(AssetDownload, Result<()>)> {
+    ) -> HashMap<AssetDownload, Result<()>> {
         stream::iter(assets)
-            .map(|asset| async move {
-                (
-                    asset.clone(),
-                    self.download_asset(&asset)
-                        .map(|x| {
-                            pb.inc(1);
-                            x.map(|_| ())
-                        })
-                        .await,
-                )
+            .map(|mut asset| async move {
+                let download = self
+                    .download_asset(&mut asset)
+                    .map(|x| {
+                        pb.inc(1);
+                        x
+                    })
+                    .await;
+                (asset, download)
             })
             .buffer_unordered(self.ctx.args.concurrent_downloads)
             .collect()
             .await
     }
 
-    /// Downloads the given [asset] and writes it to its set path, returning that path.
-    async fn download_asset(&self, asset: &AssetDownload) -> Result<PathBuf> {
+    /// Downloads the given [asset] and writes it to its set path.
+    async fn download_asset(&self, asset: &mut AssetDownload) -> Result<()> {
         let (_, content) =
             download_url(&asset.url, &self.ctx.args.http_handling, &self.ctx.client).await?;
-        Self::write_asset(&asset.path, &content)
-            .await
-            .map(|()| asset.path.clone())
+        if self.ctx.args.one_html_file {
+            asset.data_url = Some(make_data_url(&content));
+        } else {
+            Self::write_asset(&asset.path, &content)
+                .await
+                .and_then(|()| {
+                    asset
+                        .path
+                        .clone()
+                        .into_os_string()
+                        .into_string()
+                        .map_err(|_| anyhow!("Encountered invalid path"))
+                })?;
+        }
+        Ok(())
     }
 
     /// Writes the given [content] to the given [path].
@@ -374,7 +436,12 @@ impl<'a> AssetDownloader<'a> {
             Some(site_data.site_paths.lock_path()),
             Some(false),
             Some("gif"),
+            JsonReference::new(JsonSource::PsycheLock(name.to_string()), String::new()),
         );
+        if self.ctx.args.one_html_file {
+            // No need to do the symlinking here, as we're not actually creating files.
+            return;
+        }
         let last = self.collector.collected.last().unwrap().as_ref();
         // Now we need to create the symbolic links to this file.
         if let Ok(asset) = last {
@@ -428,6 +495,7 @@ impl<'a> AssetDownloader<'a> {
         let paths = &site_data.site_paths;
         let used_sprites = case.get_used_sprites();
         let used_places = case.get_used_places();
+        let case_id = case.id();
         let data = case
             .case_data
             .as_object_mut()
@@ -435,19 +503,19 @@ impl<'a> AssetDownloader<'a> {
 
         let cloned_profiles = data["profiles"].clone();
         let used_default_sprites = Self::get_used_default_sprites(&cloned_profiles, used_sprites);
-        self.collect_profiles(data, &used_default_sprites, site_data);
+        self.collect_profiles(data, &used_default_sprites, site_data, case_id);
 
-        self.collect_evidence(data, paths);
+        self.collect_evidence(data, paths, case_id);
 
         let used_default_places =
             Self::get_used_default_places(&mut site_data.default_data.default_places, &used_places);
-        self.collect_places(used_default_places, data, paths)?;
+        self.collect_places(used_default_places, data, paths, case_id)?;
 
-        self.collect_popups(data, paths)?;
+        self.collect_popups(data, paths, case_id)?;
 
-        self.collect_music(data, paths)?;
+        self.collect_music(data, paths, case_id)?;
 
-        self.collect_sounds(data, paths)?;
+        self.collect_sounds(data, paths, case_id)?;
 
         self.collect_voices(paths);
 
@@ -462,6 +530,7 @@ impl<'a> AssetDownloader<'a> {
         data: &mut serde_json::Map<String, Value>,
         used_default_sprites: &[(&str, i64)],
         site_data: &SiteData,
+        case_id: u32,
     ) {
         const SPRITE_KINDS: [&str; 3] = ["talking", "still", "startup"];
 
@@ -484,6 +553,10 @@ impl<'a> AssetDownloader<'a> {
                     Some(site_data.site_paths.sprite_path(kind, base)),
                     Some(false),
                     false,
+                    JsonReference::new(
+                        JsonSource::DefaultSprites((*base).to_string(), *i, kind.to_string()),
+                        String::new(),
+                    ),
                 );
             }
         }
@@ -491,8 +564,9 @@ impl<'a> AssetDownloader<'a> {
             .as_array_mut()
             .unwrap()
             .iter_mut()
-            .filter_map(|x| x.as_object_mut());
-        for profile in profiles {
+            .enumerate()
+            .filter_map(|x| x.1.as_object_mut().map(|o| (x.0, o)));
+        for (i, profile) in profiles {
             if profile["icon"].as_str().is_none_or(str::is_empty) {
                 // This does not use an external URL.
                 // To avoid too many bookkeeping shenanigans here, we just
@@ -504,15 +578,21 @@ impl<'a> AssetDownloader<'a> {
                     ))
                 });
             }
-            self.collector
-                .collect_download(&mut profile["icon"], None, Some(true), Some("png"));
+            self.collector.collect_download(
+                &mut profile["icon"],
+                None,
+                Some(true),
+                Some("png"),
+                JsonReference::for_case(case_id, format!("/profiles/{i}/icon")),
+            );
 
             // Profiles may also contain custom sprites.
-            for custom in profile["custom_sprites"]
+            for (j, custom) in profile["custom_sprites"]
                 .as_array_mut()
                 .unwrap()
                 .iter_mut()
                 .map(|x| x.as_object_mut().expect("Custom sprite must be object"))
+                .enumerate()
             {
                 for kind in SPRITE_KINDS {
                     if custom[kind].as_str().is_none_or(str::is_empty) {
@@ -523,6 +603,10 @@ impl<'a> AssetDownloader<'a> {
                         None,
                         Some(true),
                         Some("gif"),
+                        JsonReference::for_case(
+                            case_id,
+                            format!("/profiles/{i}/custom_sprites/{j}/{kind}"),
+                        ),
                     );
                 }
             }
@@ -530,13 +614,19 @@ impl<'a> AssetDownloader<'a> {
     }
 
     /// Collects the evidence assets used in the case.
-    fn collect_evidence(&mut self, data: &mut serde_json::Map<String, Value>, paths: &SitePaths) {
+    fn collect_evidence(
+        &mut self,
+        data: &mut serde_json::Map<String, Value>,
+        paths: &SitePaths,
+        case_id: u32,
+    ) {
         // Download the evidence.
-        for evidence in data["evidence"]
+        for (i, evidence) in data["evidence"]
             .as_array_mut()
             .unwrap()
             .iter_mut()
-            .filter_map(|x| x.as_object_mut())
+            .enumerate()
+            .filter_map(|x| x.1.as_object_mut().map(|o| (x.0, o)))
         {
             // Evidence can contain two types of assets:
             // 1.) Icons.
@@ -546,21 +636,31 @@ impl<'a> AssetDownloader<'a> {
                 Some(paths.evidence_path()),
                 external,
                 Some("png"),
+                JsonReference::for_case(case_id, format!("/evidence/{i}/icon")),
             );
             evidence["icon_external"] = Value::Bool(true);
 
             // 2.) "Check button data", which may be an image or a sound.
             // NOTE: It seems like this isn't actually preloaded by the player. Is that intentional?
-            for check_data in evidence["check_button_data"]
+            for (j, check_data) in evidence["check_button_data"]
                 .as_array_mut()
                 .unwrap()
                 .iter_mut()
                 .map(|x| x.as_object_mut().unwrap())
+                .enumerate()
                 // If this is just text, we can safely ignore it.
-                .filter(|x| x["type"].as_str().unwrap_or("text") != "text")
+                .filter(|x| x.1["type"].as_str().unwrap_or("text") != "text")
             {
-                self.collector
-                    .collect_download(&mut check_data["content"], None, None, None);
+                self.collector.collect_download(
+                    &mut check_data["content"],
+                    None,
+                    None,
+                    None,
+                    JsonReference::for_case(
+                        case_id,
+                        format!("/evidence/{i}/check_button_data/{j}/content"),
+                    ),
+                );
             }
         }
     }
@@ -568,17 +668,31 @@ impl<'a> AssetDownloader<'a> {
     /// Collects the place assets used in the case.
     fn collect_places(
         &mut self,
-        used_default_places: Vec<&mut Value>,
+        used_default_places: HashMap<i64, &mut Value>,
         data: &mut serde_json::Map<String, Value>,
         paths: &SitePaths,
-    ) -> Result<(), anyhow::Error> {
-        for place in data["places"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .chain(used_default_places)
-            .filter_map(|x| x.as_object_mut())
-        {
+        case_id: u32,
+    ) -> Result<()> {
+        self.collect_places_for(
+            (0i64..).zip(data["places"].as_array_mut().unwrap().iter_mut()),
+            paths,
+            &JsonReference::for_case(case_id, String::from("/places")),
+        )?;
+        self.collect_places_for(
+            used_default_places.into_iter(),
+            paths,
+            &JsonReference::new(JsonSource::DefaultPlaces, String::new()),
+        )?;
+        Ok(())
+    }
+
+    fn collect_places_for<'b, I: Iterator<Item = (i64, &'b mut Value)>>(
+        &mut self,
+        places: I,
+        paths: &SitePaths,
+        ref_base: &JsonReference,
+    ) -> Result<()> {
+        for (i, place) in places.filter_map(|x| x.1.as_object_mut().map(|o| (x.0, o))) {
             // Download place background itself.
             if let Some(background) = place["background"].as_object_mut() {
                 // This may just be a color instead of an actual image.
@@ -593,6 +707,7 @@ impl<'a> AssetDownloader<'a> {
                         Some(paths.bg_path()),
                         Some(external),
                         Some("jpg"),
+                        ref_base.concat_path(&format!("{i}/background/image")),
                     );
                     background["external"] = Value::Bool(true);
                 }
@@ -601,20 +716,31 @@ impl<'a> AssetDownloader<'a> {
             }
 
             // Download background objects.
-            self.collect_place_objects(&mut place["background_objects"])?;
+            self.collect_place_objects(
+                &mut place["background_objects"],
+                &ref_base.concat_path(&format!("{i}/background_objects")),
+            )?;
 
             // Download foreground objects.
-            self.collect_place_objects(&mut place["foreground_objects"])?;
+            self.collect_place_objects(
+                &mut place["foreground_objects"],
+                &ref_base.concat_path(&format!("{i}/foreground_objects")),
+            )?;
         }
         Ok(())
     }
 
     /// Collects the assets used in the given [place] objects.
-    fn collect_place_objects(&mut self, place: &mut Value) -> Result<(), anyhow::Error> {
-        for object in place
+    fn collect_place_objects(
+        &mut self,
+        place: &mut Value,
+        ref_base: &JsonReference,
+    ) -> Result<(), anyhow::Error> {
+        for (i, object) in place
             .as_array_mut()
             .map(|x| x.iter_mut().filter_map(|y| y.as_object_mut()))
             .context("Background/foreground objects must be in an array!")?
+            .enumerate()
         {
             if !object["external"]
                 .as_bool()
@@ -624,8 +750,13 @@ impl<'a> AssetDownloader<'a> {
                 warn!("Found non-external foreground/background object, even though these should always be external! Skipping.");
                 continue;
             }
-            self.collector
-                .collect_download(&mut object["image"], None, Some(true), None);
+            self.collector.collect_download(
+                &mut object["image"],
+                None,
+                Some(true),
+                None,
+                ref_base.concat_path(&format!("{i}/image")),
+            );
         }
         Ok(())
     }
@@ -635,12 +766,14 @@ impl<'a> AssetDownloader<'a> {
         &mut self,
         data: &mut serde_json::Map<String, Value>,
         paths: &SitePaths,
+        case_id: u32,
     ) -> Result<(), anyhow::Error> {
-        for popup in data["popups"]
+        for (i, popup) in data["popups"]
             .as_array_mut()
             .unwrap()
             .iter_mut()
-            .filter_map(|x| x.as_object_mut())
+            .enumerate()
+            .filter_map(|x| x.1.as_object_mut().map(|o| (x.0, o)))
         {
             let external = popup["external"]
                 .as_bool()
@@ -650,6 +783,7 @@ impl<'a> AssetDownloader<'a> {
                 Some(paths.popup_path()),
                 Some(external),
                 Some("gif"),
+                JsonReference::for_case(case_id, format!("/popups/{i}/path")),
             );
             popup["external"] = Value::Bool(true);
         }
@@ -667,6 +801,10 @@ impl<'a> AssetDownloader<'a> {
                     Some(paths.voice_path()),
                     Some(false),
                     None,
+                    JsonReference::new(
+                        JsonSource::DefaultVoices(i, ext.to_string()),
+                        String::new(),
+                    ),
                 );
             }
         }
@@ -713,12 +851,14 @@ impl<'a> AssetDownloader<'a> {
         &mut self,
         data: &mut serde_json::Map<String, Value>,
         paths: &SitePaths,
+        case_id: u32,
     ) -> Result<(), anyhow::Error> {
-        for music in data["music"]
+        for (i, music) in data["music"]
             .as_array_mut()
             .unwrap()
             .iter_mut()
-            .filter_map(|x| x.as_object_mut())
+            .enumerate()
+            .filter_map(|x| x.1.as_object_mut().map(|o| (x.0, o)))
         {
             let external = music["external"]
                 .as_bool()
@@ -728,6 +868,7 @@ impl<'a> AssetDownloader<'a> {
                 Some(paths.music_path()),
                 Some(external),
                 Some("mp3"),
+                JsonReference::for_case(case_id, format!("/music/{i}/path")),
             );
             music["external"] = Value::Bool(true);
         }
@@ -739,12 +880,14 @@ impl<'a> AssetDownloader<'a> {
         &mut self,
         data: &mut serde_json::Map<String, Value>,
         paths: &SitePaths,
+        case_id: u32,
     ) -> Result<(), anyhow::Error> {
-        for sound in data["sounds"]
+        for (i, sound) in data["sounds"]
             .as_array_mut()
             .unwrap()
             .iter_mut()
-            .filter_map(|x| x.as_object_mut())
+            .enumerate()
+            .filter_map(|x| x.1.as_object_mut().map(|o| (x.0, o)))
         {
             let external = sound["external"]
                 .as_bool()
@@ -754,6 +897,7 @@ impl<'a> AssetDownloader<'a> {
                 Some(paths.sound_path()),
                 Some(external),
                 Some("mp3"),
+                JsonReference::for_case(case_id, format!("/sounds/{i}/path")),
             );
             sound["external"] = Value::Bool(true);
         }
@@ -765,22 +909,26 @@ impl<'a> AssetDownloader<'a> {
         &mut self,
         pb: &ProgressBar,
         downloads: Vec<Result<AssetDownload>>,
+        cases: &mut [Case],
+        site_data: &mut SiteData,
     ) -> Result<()> {
         pb.inc_length(downloads.len() as u64);
         let (successes, failures): (Vec<_>, Vec<_>) = downloads.into_iter().partition_result();
-        for (asset, err) in self
-            .download_assets(successes, pb)
-            .await
+        let downloads = self.download_assets(successes, pb).await;
+        let dl_failures: Vec<_> = downloads
+            .iter()
+            .filter_map(|x| x.1.as_ref().err().map(|e| (Some(x.0), e)))
+            .collect();
+        for (asset, err) in dl_failures
             .into_iter()
-            .filter_map(|x| x.1.err().map(|e| (Some(x.0), e)))
-            .chain(failures.into_iter().map(|e| (None, e)))
+            .chain(failures.iter().map(|e| (None, e)))
         {
             if asset.as_ref().is_some_and(|x| x.ignore_inaccessible) {
                 continue;
             }
             error!(
                 "Could not download asset at {}: {err}{}",
-                asset.map_or(String::from("[UNKNOWN URL]"), |x| x.url),
+                asset.map_or("[UNKNOWN URL]", |x| &x.url),
                 if self.ctx.args.continue_on_asset_error {
                     " (continuing anyway)"
                 } else {
@@ -791,18 +939,81 @@ impl<'a> AssetDownloader<'a> {
                 return Err(anyhow!("Could not download asset: {err}"));
             }
         }
+
+        if self.ctx.args.one_html_file {
+            // We now need to write back the data URLs into the JSON.
+            let mut case_map: HashMap<u32, &mut Case> =
+                cases.iter_mut().map(|x| (x.id(), x)).collect();
+            for asset in downloads.iter().filter(|x| x.1.is_ok()).map(|x| x.0) {
+                Self::rewrite_data(asset, &mut case_map, site_data);
+            }
+        }
         Ok(())
     }
 
-    /// Returns the default places that are actually used in the case.
+    pub(crate) fn rewrite_data(
+        data_asset: &AssetDownload,
+        case_map: &mut HashMap<u32, &mut Case>,
+        site_data: &mut SiteData,
+    ) {
+        let data_url = data_asset
+            .data_url
+            .clone()
+            .expect("Data URL must be present");
+        match &data_asset.json_ref.source {
+            JsonSource::CaseData(id) => {
+                let data = &mut case_map
+                    .get_mut(id)
+                    .expect("case with ID must be present")
+                    .case_data;
+                // Modify pointee to value with data URL.
+                *data
+                    .pointer_mut(&data_asset.json_ref.pointer)
+                    .expect("pointer must be valid") = Value::String(data_url);
+            }
+            JsonSource::DefaultPlaces => {
+                // We skip the root part of the string (i.e., "/{id}/rest...") that would be empty.
+                let mut pointer_parts = data_asset.json_ref.pointer.splitn(3, '/').skip(1);
+                let id = pointer_parts.next().unwrap();
+                let pointer = format!("/{}", pointer_parts.next().unwrap());
+                *site_data
+                    .default_data
+                    .default_places
+                    .get_mut(&id.parse().expect("invalid ID encountered"))
+                    .expect("default place ID must be valid")
+                    .pointer_mut(&pointer)
+                    .expect("pointer must be valid") = Value::String(data_url);
+            }
+            JsonSource::DefaultVoices(id, ext) => {
+                site_data
+                    .default_data
+                    .default_voice_urls
+                    .insert((*id, ext.clone()), data_url);
+            }
+            JsonSource::DefaultSprites(base, sprite_id, kind) => {
+                site_data
+                    .default_data
+                    .default_sprite_urls
+                    .insert((base.clone(), *sprite_id, kind.clone()), data_url);
+            }
+            JsonSource::PsycheLock(name) => {
+                site_data
+                    .default_data
+                    .psyche_lock_urls
+                    .insert(name.clone(), data_url);
+            }
+        }
+    }
+
+    /// Returns the default places that are actually used in the case, along with their index.
     fn get_used_default_places<'b>(
         default_places: &'b mut HashMap<i64, Value>,
         used_places: &HashSet<i64>,
-    ) -> Vec<&'b mut Value> {
+    ) -> HashMap<i64, &'b mut Value> {
         default_places
             .iter_mut()
             .filter(|x| used_places.contains(x.0))
-            .map(|x| x.1)
+            .map(|x| (*x.0, x.1))
             .collect()
     }
 
