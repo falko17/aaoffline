@@ -261,6 +261,13 @@ impl AssetCollector {
             .replace_all(url, "$1/")
             .to_string();
         trace!("{url} to {}", path.display());
+        assert!(
+            path.parent()
+                .expect("parent dir must exist")
+                .ends_with("assets"),
+            "must end with assets/ but doesn't: {}",
+            path.display()
+        );
         // Reassign icon to contain new name.
         *file_value = Value::String(
             // We need to strip the output prefix here, as the URL that's written to the trial data
@@ -631,13 +638,15 @@ impl<'a> AssetDownloader<'a> {
             // Evidence can contain two types of assets:
             // 1.) Icons.
             let external = evidence["icon_external"].as_bool();
-            self.collector.collect_download(
-                &mut evidence["icon"],
-                Some(paths.evidence_path()),
-                external,
-                Some("png"),
-                JsonReference::for_case(case_id, format!("/evidence/{i}/icon")),
-            );
+            if evidence["icon"].as_str().is_some_and(|x| !x.is_empty()) {
+                self.collector.collect_download(
+                    &mut evidence["icon"],
+                    Some(paths.evidence_path()),
+                    external,
+                    Some("png"),
+                    JsonReference::for_case(case_id, format!("/evidence/{i}/icon")),
+                );
+            }
             evidence["icon_external"] = Value::Bool(true);
 
             // 2.) "Check button data", which may be an image or a sound.

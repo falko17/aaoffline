@@ -30,8 +30,11 @@ const PSYCHE_LOCK_TEST: &str = "89247";
 const THE_TORRENTIAL_TURNABOUT: &str = "https://aaonline.fr/player.php?trial_id=99015";
 // To test if old URLs work:
 const TURNABOUT_OF_COURAGE: &str = "http://aceattorney.sparklin.org/jeu.php?id_proces=27826";
+// This one has evidence without an icon, which caused issue #3:
+const BROKEN_COMMANDMENTS: &str = "140935";
 
-const ALL_CASES: [&str; 4] = [
+// Cases used in multi-download test:
+const MULTI_CASES: [&str; 4] = [
     THE_TORRENTIAL_TURNABOUT,
     PSYCHE_LOCK_TEST,
     GAME_OF_TURNABOUTS,
@@ -77,7 +80,8 @@ fn example_cases(
         THE_TORRENTIAL_TURNABOUT,
         PSYCHE_LOCK_TEST,
         GAME_OF_TURNABOUTS,
-        TURNABOUT_OF_COURAGE
+        TURNABOUT_OF_COURAGE,
+        BROKEN_COMMANDMENTS
     )]
     case: &str,
 ) {
@@ -239,10 +243,10 @@ fn test_sequence() {
 fn test_multi(mut cmd: Cmd) {
     cmd.with_tmp_output(false)
         .cmd
-        .args(ALL_CASES)
+        .args(MULTI_CASES)
         .assert()
         .success();
-    for case in ALL_CASES {
+    for case in MULTI_CASES {
         let case_id = get_id(case);
         let path = glob_one(&format!("{}/*_{case_id}/", cmd.path_as_str()));
         verify_with_browser(path.as_os_str().to_str().unwrap(), None).unwrap();
