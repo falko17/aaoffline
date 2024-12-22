@@ -15,6 +15,8 @@ use sanitize_filename::sanitize;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::fmt::Display;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -71,6 +73,17 @@ pub(crate) fn make_data_url(data: &Bytes) -> String {
         .map_or("application/octet-stream", |x| x.mime_type());
     format!("data:{mime};base64,{}", BASE64_STANDARD.encode(data))
 }
+
+#[derive(Debug)]
+struct EmptyUrl;
+
+impl Display for EmptyUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Empty URL encountered.")
+    }
+}
+
+impl Error for EmptyUrl {}
 
 /// An asset download request.
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
@@ -234,7 +247,11 @@ impl AssetCollector {
         ignore_inaccessible: bool,
         json_ref: JsonReference,
     ) -> Result<AssetDownload> {
-        let mut file = PathBuf::from(file_value.as_str().unwrap_or(&self.default_icon_url));
+        let file_string = file_value.as_str().unwrap_or(&self.default_icon_url);
+        if file_string.is_empty() {
+            return Err(EmptyUrl.into());
+        }
+        let mut file = PathBuf::from(file_string);
         if file.extension().is_none() {
             if let Some(ext) = default_extension {
                 file.set_extension(ext);
@@ -643,15 +660,13 @@ impl<'a> AssetDownloader<'a> {
             // Evidence can contain two types of assets:
             // 1.) Icons.
             let external = evidence["icon_external"].as_bool();
-            if evidence["icon"].as_str().is_some_and(|x| !x.is_empty()) {
-                self.collector.collect_download(
-                    &mut evidence["icon"],
-                    Some(paths.evidence_path()),
-                    external,
-                    Some("png"),
-                    JsonReference::for_case(case_id, format!("/evidence/{i}/icon")),
-                );
-            }
+            self.collector.collect_download(
+                &mut evidence["icon"],
+                Some(paths.evidence_path()),
+                external,
+                Some("png"),
+                JsonReference::for_case(case_id, format!("/evidence/{i}/icon")),
+            );
             evidence["icon_external"] = Value::Bool(true);
 
             // 2.) "Check button data", which may be an image or a sound.
@@ -708,6 +723,7 @@ impl<'a> AssetDownloader<'a> {
     ) -> Result<()> {
         for (i, place) in places.filter_map(|x| x.1.as_object_mut().map(|o| (x.0, o))) {
             // Download place background itself.
+            trace!("{place:?}");
             if let Some(background) = place["background"].as_object_mut() {
                 // This may just be a color instead of an actual image.
                 // (In the case of default places).
@@ -937,7 +953,10 @@ impl<'a> AssetDownloader<'a> {
             .into_iter()
             .chain(failures.iter().map(|e| (None, e)))
         {
-            if asset.as_ref().is_some_and(|x| x.ignore_inaccessible) {
+            if asset.as_ref().is_some_and(|x| x.ignore_inaccessible)
+                // Some assets have empty URLs, we don't need to download these.
+                || asset.as_ref().is_none() && err.root_cause().is::<EmptyUrl>()
+            {
                 continue;
             }
             error!(
@@ -950,7 +969,7 @@ impl<'a> AssetDownloader<'a> {
                 }
             );
             if !self.ctx.args.continue_on_asset_error {
-                return Err(anyhow!("Could not download asset: {err}"));
+                std::process::exit(exitcode::UNAVAILABLE);
             }
         }
 
