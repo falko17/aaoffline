@@ -54,7 +54,7 @@ pub(crate) struct CaseInformation {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Sequence {
     /// The title of the sequence.
-    title: String,
+    pub(crate) title: String,
     /// The list of entries in the sequence.
     list: Vec<SequenceEntry>,
 }
@@ -63,6 +63,11 @@ impl Sequence {
     /// Returns a list of case IDs in this sequence.
     pub(crate) fn entry_ids(&self) -> Vec<u32> {
         self.list.iter().map(|x| x.id).collect()
+    }
+
+    /// Returns the number of cases contained in this sequence.
+    pub(crate) fn len(&self) -> usize {
+        self.list.len()
     }
 }
 

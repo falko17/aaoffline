@@ -396,10 +396,14 @@ impl MainContext {
     fn ask_sequence(&self, case: &Case, sequence: &Sequence) -> bool {
         if stdin().is_terminal() {
             let result = self.pb.suspend(|| {
-                println!(
+                info!(
                     "The case \"{}\" is part of a sequence: {sequence}.",
-                    case.case_information.title
+                    case.case_information.title,
                 );
+                if sequence.len() <= 1 {
+                    info!("However, as there is only entry in this sequence, we will continue normally.");
+                    return Some(false);
+                }
                 let result = dialoguer::Confirm::new()
                     .with_prompt("Do you want to download the other cases in this sequence too?")
                     .default(false)
