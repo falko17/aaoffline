@@ -74,9 +74,9 @@ struct Args {
     #[arg(required=true, num_args = 1.., value_parser = Self::accept_case)]
     cases: Vec<u32>,
 
-    /// The output directory for the case.
+    /// The output directory (or filename, if `-1` was used) for the case.
     ///
-    /// If this is not passed, will use the ID of the case.
+    /// If this is not passed, will use the title + ID of the case.
     /// It multiple cases are downloaded, they will all be put under this directory (which, by
     /// default, will be the current directory).
     #[arg(short('o'), long)]
@@ -206,7 +206,9 @@ impl MainContext {
 
         let output = args.output.clone().unwrap_or_else(|| {
             if let [single] = case_ids[..] {
-                // If there's just a single case, we can just put it in a directory with its ID.
+                // If there's just a single case, we can just put it in a directory with its name.
+                // We don't know its name yet, so we'll change this later once we retrieved it,
+                // for now we'll use the ID.
                 PathBuf::from(single.to_string())
             } else {
                 // If there's more than one, we put them in the current directory.
@@ -445,12 +447,14 @@ impl MainContext {
                 .clone_from(&original_default_places);
             let output = if multiple {
                 // Case data needs to be put into the directory of that case.
-                self.output.join(PathBuf::from(case.id().to_string()))
+                self.output.join(PathBuf::from(case.filename().to_string()))
             } else {
                 self.output.clone()
             };
             // May need to create the directory first.
-            fs::create_dir_all(output.join("assets")).await?;
+            if !ctx.args.one_html_file {
+                fs::create_dir_all(output.join("assets")).await?;
+            }
             handler.set_output(output);
             downloads.append(&mut handler.collect_case_data(case, site_data).await?);
         }
@@ -500,17 +504,16 @@ impl MainContext {
 
     /// Output the finished player for the case to [`output_path`].
     async fn output_player(&self, output_path: &Path) -> Result<()> {
-        let output = output_path.join("index.html");
-        fs::create_dir_all(output.parent().unwrap()).await?;
+        fs::create_dir_all(output_path.parent().unwrap()).await?;
         fs::write(
-            &output,
+            &output_path,
             self.player.as_ref().unwrap().content.as_ref().unwrap(),
         )
         .await
         .with_context(|| {
             format!(
                 "Could not write player to file {}. Please check your permissions.",
-                output.display()
+                output_path.display()
             )
         })?;
         Ok(())
@@ -521,14 +524,48 @@ impl MainContext {
 async fn main() -> Result<()> {
     setup_panic!();
     let args = Args::parse();
+    let original_output = args.output.clone();
+    let one_file = args.one_html_file;
     env_logger::builder()
         .format_timestamp(None)
         .filter_level(args.verbose.log_level_filter())
         .init();
     let mut ctx = MainContext::new(args).await;
 
+    ctx.show_step(1, "Retrieving case information...");
+    let mut cases = ctx.retrieve_case_infos().await?;
+    let num_cases = cases.len();
+    let one_case = num_cases == 1;
+
+    if one_case && original_output.is_none() {
+        // We need to update the output name, now that we know the title.
+        let mut name = cases.first().unwrap().filename();
+        if one_file {
+            name += ".html";
+        }
+        ctx.output = PathBuf::from(name);
+    } else if one_case
+        && one_file
+        && ctx
+            .output
+            .extension()
+            .is_none_or(|x| x.to_ascii_lowercase() != "html")
+    {
+        if ctx.output.is_dir() {
+            ctx.output = ctx.output.join(cases.first().unwrap().filename());
+        }
+        ctx.output.set_extension("html");
+    }
+
     // Empty directories are fine if they exist already.
-    if ctx.output.exists() && ctx.output.read_dir()?.next().is_some() {
+    if ctx.output.exists()
+        && ctx
+            .output
+            .read_dir()
+            .ok()
+            .and_then(|mut x| x.next())
+            .is_some()
+    {
         if ctx.ctx().args.remove_existing {
             info!("Output exists already, deleting...");
             ctx.cleanup_data(false).await;
@@ -548,14 +585,10 @@ async fn main() -> Result<()> {
         }
     }
 
-    ctx.show_step(1, "Retrieving case information...");
-    let mut cases = ctx.retrieve_case_infos().await?;
-    let num_cases = cases.len();
-    let only_one = num_cases == 1;
     ctx.pb.finish_and_clear();
     info!(
         "Case{} identified as: {}",
-        if only_one { "" } else { "s" },
+        if one_case { "" } else { "s" },
         cases.iter().map(ToString::to_string).join(", ")
     );
     ctx.pb = ctx
@@ -569,7 +602,7 @@ async fn main() -> Result<()> {
         3,
         &format!(
             "Downloading case assets{}... (This may take a while)",
-            if only_one {
+            if one_case {
                 String::new()
             } else {
                 format!(" for {num_cases} cases")
@@ -588,6 +621,7 @@ async fn main() -> Result<()> {
     ctx.retrieve_player_sources().await?;
 
     let original_state = ctx.player.as_ref().unwrap().save();
+    let mut output_path: PathBuf = PathBuf::new();
     for case in cases {
         // Need to reset transformed player.
         ctx.show_step(
@@ -599,19 +633,17 @@ async fn main() -> Result<()> {
         );
         ctx.player.as_mut().unwrap().restore(original_state.clone());
         ctx.transform_player_blocks(&case).await?;
-        let output_path = if only_one {
-            &ctx.output
-        } else {
-            &ctx.output.join(case.id().to_string())
+        output_path = match (one_case, one_file) {
+            (true, true) => ctx.output.clone(),
+            (true, false) => ctx.output.join("index.html"),
+            (false, true) => ctx.output.join(case.filename() + ".html"),
+            (false, false) => ctx.output.join(case.filename()).join("index.html"),
         };
-        ctx.output_player(output_path).await?;
+        ctx.output_player(&output_path).await?;
     }
 
-    let message = if only_one {
-        format!(
-            "Case successfully written to {}/index.html!",
-            &ctx.output.display()
-        )
+    let message = if one_case {
+        format!("Case successfully written to {}!", &output_path.display())
     } else {
         let output = if ctx.output == PathBuf::from(".") {
             "current directory"

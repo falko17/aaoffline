@@ -128,6 +128,11 @@ impl Case {
         self.case_information.id
     }
 
+    /// Returns what we shall use as a file or directory name for this case.
+    pub(crate) fn filename(&self) -> String {
+        format!("{}_{}", &self.case_information.title, self.id())
+    }
+
     /// Retrieves a case using the given [`case_id`] from Ace Attorney Online.
     pub(crate) async fn retrieve_from_id(case_id: u32, client: &Client) -> Result<Case> {
         let case_script = client.get(format!(
