@@ -135,7 +135,7 @@ impl Case {
 
     /// Returns what we shall use as a file or directory name for this case.
     pub(crate) fn filename(&self) -> String {
-        format!("{}_{}", &self.case_information.title, self.id())
+        sanitize_filename::sanitize(format!("{}_{}", &self.case_information.title, self.id()))
     }
 
     /// Retrieves a case using the given [`case_id`] from Ace Attorney Online.
