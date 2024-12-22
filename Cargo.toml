@@ -27,6 +27,7 @@ itertools = "0.13.0"
 log = "0.4.22"
 regex = "1.11.1"
 reqwest = { version = "0.12.9", features = ["gzip"] }
+sanitize-filename = "0.6.0"
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = "1.0.133"
 serde_with = { version = "3.11.0", features = ["chrono"] }

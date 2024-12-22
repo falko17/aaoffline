@@ -11,6 +11,7 @@ use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use regex::Regex;
 use reqwest::Client;
+use sanitize_filename::sanitize;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -186,12 +187,16 @@ impl AssetCollector {
         let name = urlencoding::decode(&name)
             .map(Cow::into_owned)
             .unwrap_or(name);
-        let first_choice = self.output.join("assets").join(&name).with_extension(&ext);
+        let first_choice = self
+            .output
+            .join("assets")
+            .join(sanitize(name.clone()))
+            .with_extension(&ext);
         // If we used this filename already, we need to append a hash.
         if self.path_exists(&first_choice) {
             self.output
                 .join("assets")
-                .join(format!("{name}-{}", Self::hash(url)))
+                .join(sanitize(format!("{name}-{}", Self::hash(url))))
                 .with_extension(ext)
         } else {
             first_choice
