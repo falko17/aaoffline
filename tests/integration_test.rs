@@ -1,6 +1,7 @@
 use std::{
     error::Error,
     fmt::Display,
+    path::PathBuf,
     sync::{Arc, Mutex, Weak},
     time::Duration,
 };
@@ -17,6 +18,7 @@ use headless_chrome::{
     },
     Browser, LaunchOptionsBuilder,
 };
+use itertools::Itertools;
 use rstest::{fixture, rstest};
 use rstest_reuse::{apply, template};
 use tempfile::{tempdir, TempDir};
@@ -48,16 +50,24 @@ impl Cmd {
     fn path_as_str(&self) -> &str {
         self.path.path().to_str().unwrap()
     }
+
+    fn with_tmp_output(&mut self, one_file: bool) -> &mut Self {
+        let path = self.path_as_str();
+        let mut filename = path.to_string();
+        if one_file {
+            filename += "/index.html";
+        }
+        self.cmd.args(["-o", &filename]);
+        self
+    }
 }
 
 #[fixture]
 fn cmd() -> Cmd {
     let mut cmd = Command::cargo_bin("aaoffline").unwrap();
     cmd.args(["-s", "single"]);
-    let tmp = tempdir().unwrap();
-    let path = tmp.path().to_str().unwrap();
-    cmd.args(["-o", path]);
-    Cmd { cmd, path: tmp }
+    let path = tempdir().unwrap();
+    Cmd { cmd, path }
 }
 
 #[template]
@@ -163,7 +173,8 @@ fn test_invalid_id(
 #[rstest]
 #[timeout(Duration::from_secs(60))]
 fn test_html5_cors_error(mut cmd: Cmd) {
-    cmd.cmd
+    cmd.with_tmp_output(false)
+        .cmd
         .arg("--disable-html5-audio")
         .arg(PSYCHE_LOCK_TEST)
         .assert()
@@ -193,7 +204,11 @@ fn test_single(mut cmd: Cmd, case: &str, #[values(true, false)] one_file: bool) 
     if one_file {
         cmd.cmd.arg("-1");
     }
-    cmd.cmd.arg(case).assert().success();
+    cmd.with_tmp_output(one_file)
+        .cmd
+        .arg(case)
+        .assert()
+        .success();
     verify_with_browser(cmd.path_as_str(), None).unwrap();
 }
 
@@ -203,7 +218,11 @@ fn test_psyche_locks(mut cmd: Cmd, #[values(true, false)] one_file: bool) {
     if one_file {
         cmd.cmd.arg("-1");
     }
-    cmd.cmd.arg(PSYCHE_LOCK_TEST).assert().success();
+    cmd.with_tmp_output(one_file)
+        .cmd
+        .arg(PSYCHE_LOCK_TEST)
+        .assert()
+        .success();
     verify_with_browser(cmd.path_as_str(), Some(PSYCHE_LOCK_SAVE)).unwrap();
 }
 
@@ -218,9 +237,83 @@ fn test_sequence() {
 
 #[rstest]
 fn test_multi(mut cmd: Cmd) {
-    cmd.cmd.args(ALL_CASES).assert().success();
+    cmd.with_tmp_output(false)
+        .cmd
+        .args(ALL_CASES)
+        .assert()
+        .success();
     for case in ALL_CASES {
         let case_id = get_id(case);
-        verify_with_browser(&format!("{}/{case_id}", cmd.path_as_str()), None).unwrap();
+        let path = glob_one(&format!("{}/*_{case_id}/", cmd.path_as_str()));
+        verify_with_browser(path.as_os_str().to_str().unwrap(), None).unwrap();
     }
+    drop(cmd);
+}
+
+#[rstest]
+fn test_output_format(
+    #[values(true, false)] one_file: bool,
+    #[values(true, false)] one_case: bool,
+    #[values(true, false)] existing_dir: bool,
+) {
+    let mut cmd = Command::cargo_bin("aaoffline").unwrap();
+    let testpath = tempdir().unwrap().into_path().join("test");
+    if existing_dir {
+        std::fs::create_dir(&testpath).unwrap();
+    }
+    let path = testpath.to_str().unwrap();
+    cmd.args(["-s", "single", "-o", path]);
+    if one_file {
+        cmd.arg("-1");
+    }
+    if one_case {
+        cmd.arg(PSYCHE_LOCK_TEST);
+    } else {
+        cmd.args([PSYCHE_LOCK_TEST, GAME_OF_TURNABOUTS]);
+    }
+
+    cmd.assert().success();
+
+    let tmpdir = testpath.parent().unwrap();
+    match (one_file, one_case, existing_dir) {
+        // Should be put at "test.html" in the tempdir.
+        (true, true, false) => {
+            assert!(tmpdir.join("test.html").is_file());
+            assert!(!tmpdir.join("assets").exists());
+        }
+        // Should be put at "test/<title>_<case id>.html" in the tempdir.
+        (true, true, true) => {
+            let file = glob_one(&format!("{path}/*_{PSYCHE_LOCK_TEST}.html"));
+            assert!(file.is_file());
+            assert!(!testpath.join("assets").exists());
+        }
+        // Should be put at "test/<title>_<case id>.html" in the tempdir.
+        (true, false, _) => {
+            let first = glob_one(&format!("{path}/*_{GAME_OF_TURNABOUTS}.html"));
+            let second = glob_one(&format!("{path}/*_{PSYCHE_LOCK_TEST}.html"));
+            assert!(first.is_file());
+            assert!(second.is_file());
+            assert!(!testpath.join("assets").exists());
+        }
+        // Should be at "test/index.html".
+        (false, true, _) => {
+            assert!(testpath.join("index.html").is_file());
+            assert!(testpath.join("assets").is_dir());
+        }
+        // Should be at "test/<title>_<case id>/index.html".
+        (false, false, _) => {
+            let first = glob_one(&format!("{path}/*_{GAME_OF_TURNABOUTS}"));
+            let second = glob_one(&format!("{path}/*_{PSYCHE_LOCK_TEST}"));
+            assert!(first.is_dir());
+            assert!(second.is_dir());
+            assert!(first.join("index.html").is_file());
+            assert!(second.join("index.html").is_file());
+            assert!(first.join("assets").is_dir());
+            assert!(second.join("assets").is_dir());
+        }
+    };
+}
+
+fn glob_one(pat: &str) -> PathBuf {
+    glob::glob(pat).unwrap().exactly_one().unwrap().unwrap()
 }
