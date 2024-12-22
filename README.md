@@ -7,6 +7,7 @@ Downloads cases from [Ace Attorney Online](https://aaonline.fr) to be playable o
 - Backup cases in a way that makes them fully playable offline by downloading all referenced assets.
 - Use parallel downloads to download case data quickly.
 - Download multiple cases at once.
+- Use the `-1` flag to compile the case into a single HTML file, without the need for a separate assets folder.
 - Choose a specific version of the Ace Attorney Online player (e.g., if a case only works with an older version).
 
 ## Usage
@@ -27,8 +28,9 @@ aaoffline "http://www.aaonline.fr/player.php?trial_id=YOUR_ID_HERE"
 
 You can also pass more than one case at a time (separated by spaces) if you want to download multiple cases at once.
 
-By default, the case will be put into a directory with the case ID as its name. You can change this by just passing a different directory name as `-o some_directory`. If there are multiple cases, each case will be put into its own folder, again with the case ID as its name, all under the directory chosen with `-o` (or the current directory if none was set).
+By default, the case will be put into a directory with the case title as its name. You can change this by just passing a different directory name as `-o some_directory`. If there are multiple cases, each case will be put into its own folder, again with the case title as its name, all under the directory chosen with `-o` (or the current directory if none was set).
 The downloaded case can then be played by opening the `index.html` file in the output directory—all case assets are put in the `assets` directory, so if you want to move this downloaded case somewhere else, you'll need to move the `assets` along with it.
+Alternatively, you can pass the `-1` flag to aaoffline, which causes the case to be compiled into a single (large) HTML file, with the assets encoded as data URLs instead of being put into separate files. (Warning: Browsers may not like HTML files very much that are multiple dozens of megabytes large. Your mileage may vary.)
 
 There are some additional parameters you can set, such as `--concurrent-downloads` to choose a different number of parallel downloads to use[^2], or `--player-version` to choose a specific commit of the player.
 To get an overview of available options, just run `aaoffline --help`.
