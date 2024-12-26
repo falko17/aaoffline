@@ -180,10 +180,19 @@ impl AssetCollector {
     }
 
     /// Checks whether a [path] exists already in the collected downloads.
-    fn path_exists(&self, path: &PathBuf) -> bool {
-        self.collected
-            .iter()
-            .any(|x| x.as_ref().ok().map_or(false, |x| x.path == *path))
+    fn path_exists(&self, path: &Path) -> bool {
+        // Need to use a lower-case comparison here, otherwise we'll run into problems on Windows
+        // (where the file system is usually case-insensitive).
+        let lower_path = path
+            .to_str()
+            .expect("Invalid path encountered")
+            .to_lowercase();
+        self.collected.iter().any(|x| {
+            x.as_ref()
+                .ok()
+                .and_then(|y| y.path.to_str())
+                .map_or(false, |y| y.to_lowercase() == lower_path)
+        })
     }
 
     /// Creates a new unique path for the given [url] and [path].
