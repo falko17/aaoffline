@@ -582,7 +582,7 @@ async fn main() -> Result<()> {
                 .any(|x| ctx.output.join(x.to_string()).exists())
         {
             error!(
-                "Output at {} already exists. Please remove it or use --overwrite-existing.",
+                "Output at {} already exists. Please remove it or use --remove-existing.",
                 ctx.output.display()
             );
             std::process::exit(exitcode::DATAERR);
