@@ -256,7 +256,7 @@ impl AssetCollector {
         ignore_inaccessible: bool,
         json_ref: JsonReference,
     ) -> Result<AssetDownload> {
-        let file_string = file_value.as_str().unwrap_or(&self.default_icon_url);
+        let file_string = file_value.as_str().unwrap_or(&self.default_icon_url).trim();
         if file_string.is_empty() {
             return Err(EmptyUrl.into());
         }
