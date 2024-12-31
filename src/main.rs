@@ -22,6 +22,7 @@ use log::{debug, error, info, warn, Level};
 use reqwest::Client;
 use serde::Serialize;
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::io::{stdin, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -344,14 +345,14 @@ impl MainContext {
     }
 
     /// Retrieves the case information for all cases and possibly their sequences.
-    async fn retrieve_case_infos(&mut self) -> Result<Vec<Case>> {
+    async fn retrieve_case_infos(&mut self) -> Result<HashSet<Case>> {
         // We temporarily move the context out of here to use its client freely.
         let ctx = self.global_ctx.take().expect("context must exist here");
         let client = &ctx.client;
-        let mut cases: Vec<_> =
+        let mut cases: HashSet<_> =
             Self::download_case_infos_no_sequence(&self.case_ids, client).await?;
-        cases.append(
-            &mut Self::download_case_infos_no_sequence(
+        cases.extend(
+            Self::download_case_infos_no_sequence(
                 &cases
                     .iter()
                     .flat_map(|case| self.additional_cases(case, &ctx))
@@ -366,7 +367,10 @@ impl MainContext {
     }
 
     /// Downloads the case information for the given [ids], without downloading the sequences.
-    async fn download_case_infos_no_sequence(ids: &[u32], client: &Client) -> Result<Vec<Case>> {
+    async fn download_case_infos_no_sequence(
+        ids: &[u32],
+        client: &Client,
+    ) -> Result<HashSet<Case>> {
         future::join_all(ids.iter().map(|x| Case::retrieve_from_id(*x, client)))
             .await
             .into_iter()
@@ -537,7 +541,7 @@ async fn main() -> Result<()> {
     let mut ctx = MainContext::new(args).await;
 
     ctx.show_step(1, "Retrieving case information...");
-    let mut cases = ctx.retrieve_case_infos().await?;
+    let mut cases: Vec<_> = ctx.retrieve_case_infos().await?.into_iter().collect();
     let num_cases = cases.len();
     let one_case = num_cases == 1;
 
