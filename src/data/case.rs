@@ -25,7 +25,7 @@ use crate::data::RegexNotMatched;
 
 /// Represents the information of a case.
 #[serde_with::serde_as]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub(crate) struct CaseInformation {
     /// The name of the author of the case.
     author: String,
@@ -51,7 +51,7 @@ pub(crate) struct CaseInformation {
 }
 
 /// A sequence of connected cases.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Sequence {
     /// The title of the sequence.
     pub(crate) title: String,
@@ -87,7 +87,7 @@ impl Display for Sequence {
 }
 
 /// An entry (case) in a sequence.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct SequenceEntry {
     /// The ID of the case.
     id: u32,
@@ -119,7 +119,7 @@ impl Display for CaseInformation {
 }
 
 /// A case for the Ace Attorney Online player.
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Hash)]
 pub(crate) struct Case {
     /// Metadata about this case.
     pub(crate) case_information: CaseInformation,
