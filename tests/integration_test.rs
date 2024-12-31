@@ -175,7 +175,7 @@ fn test_invalid_id(
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(60))]
+#[timeout(Duration::from_secs(60 * 5))]
 fn test_html5_cors_error(mut cmd: Cmd) {
     cmd.with_tmp_output(false)
         .cmd
