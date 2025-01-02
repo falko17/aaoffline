@@ -577,6 +577,24 @@ async fn main() -> Result<()> {
             *output = output.join(cases.first().unwrap().filename());
         }
         output.set_extension("html");
+    } else if !one_case
+        && original_output.is_none()
+        && cases
+            .iter()
+            .map(|x| &x.case_information.sequence)
+            .all_equal_value()
+            .is_ok_and(Option::is_some)
+    {
+        // All downloaded cases are part of a sequence.
+        let sequence = cases
+            .first()
+            .as_ref()
+            .unwrap()
+            .case_information
+            .sequence
+            .as_ref()
+            .unwrap();
+        *output = PathBuf::from(&sequence.title);
     }
     let output = &ctx.ctx().output;
 
