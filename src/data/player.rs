@@ -672,6 +672,39 @@ impl Player {
             warn!("Could not find default place preloading in scripts, skipping.");
         }
 
+        // When ending a case, it's possible that we might be redirected to another entry
+        // of the same sequence. To support this (when the user downloads multiple cases),
+        // we need to add another ugly hack here to hard-code the resulting paths.
+        if let Some(redirection) = re::REDIRECTION_REGEX.captures(scripts) {
+            let target = redirection.get(1).unwrap().as_str();
+            let save = redirection.get(2).unwrap().as_str();
+            let mut new_redirection = format!("switch (Number.parseInt({target})) {{\n");
+            for (id, path) in &self.scripts.ctx.case_output_mapping {
+                // The path needs to be relative to each case (so that downloaded cases can be moved).
+                let mut target_path = path
+                    .strip_prefix(&self.scripts.ctx.output)?
+                    .to_str()
+                    .expect("invalid path encountered")
+                    .to_string();
+                if !self.scripts.ctx.args.one_html_file {
+                    // We need to go up one directory first.
+                    target_path = format!("../{target_path}");
+                }
+
+                new_redirection.push_str(&format!(
+                    "case {id}: window.location.href = '{target_path}' + '?{save};\nbreak;\n"
+                ));
+            }
+            new_redirection.push_str("default: window.alert('Target case was not downloaded when this case was written. Please download a sequence of cases together (at once). You can, for example, use `-s every` with aaoffline to do this.');\n}");
+            replacements.push(PlayerTransformation::new(
+                TransformationTarget::Scripts,
+                redirection.get(0).unwrap().range(),
+                new_redirection,
+            ));
+        } else {
+            warn!("Could not find redirection in scripts, skipping.");
+        }
+
         // Apply the replacements in reverse order to avoid messing up the ranges.
         replacements.sort_by(|a, b| b.range.start.cmp(&a.range.start));
         for transformation in &replacements {

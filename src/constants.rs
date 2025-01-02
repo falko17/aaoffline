@@ -89,6 +89,10 @@ pub(crate) mod re {
         Regex::new(r#"generateImageElement\((?P<path>cfg\.picture_dir\s*\+\s*cfg\.locks_subdir\s*\+\s*(?P<type>[^+]*?\s*\+\s*)?['"](?P<name>[^'"]*?)\.gif\?id=['"](?P<id>.*?))\);"#).unwrap()
     });
 
+    pub(crate) static REDIRECTION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"window\.location\.href\s*=\s*'\?trial_id='\s*\+\s*([^+\s]+)\s*\+\s*'&(save_data=.*?);").unwrap()
+    });
+
     pub(crate) static REMOVE_QUERY_PARAMETERS_REGEX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"\?.*").unwrap());
 }
