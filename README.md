@@ -63,3 +63,7 @@ If you have Python installed, you can run `python3 -m http.server -d CASE_DIRECT
 [^1]: Both modern `aaonline.fr` and out-of-date `aceattorney.sparklin.org` URLs are supported.
 
 [^2]: This is set to 5 by default, but a higher number can lead to significantly faster downloads. Don't overdo it, though, or some servers may block you.
+
+### I get "The save you provided was not created on this trial" after finishing a case that is part of a sequence.
+
+For case redirection within sequences to work correctly, `aaoffline` needs to know where each case is saved. This means that the whole sequence needs to be downloaded in a single run for `aaoffline` to set up jumps between cases, so please download all such cases at once (e.g., using `-s every`).

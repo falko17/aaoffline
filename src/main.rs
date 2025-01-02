@@ -22,7 +22,7 @@ use log::{debug, error, info, warn, Level};
 use reqwest::Client;
 use serde::Serialize;
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{stdin, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -164,15 +164,17 @@ impl Args {
 pub(crate) struct GlobalContext {
     /// The parsed command line arguments.
     args: Args,
+    /// The output directory for the case.
+    output: PathBuf,
     /// The HTTP client to use for requests.
     client: Client,
+    /// Mapping from case ID to output directory.
+    case_output_mapping: HashMap<u32, PathBuf>,
 }
 
 /// The main context for the program.
 #[derive(Debug)]
 struct MainContext {
-    /// The output directory for the case.
-    output: PathBuf,
     /// Whether the output directory was empty before we started.
     output_was_empty: bool,
     /// The IDs of the cases to download.
@@ -195,6 +197,17 @@ impl MainContext {
             &self
                 .player
                 .as_ref()
+                .expect("either player or MainContext must have GlobalContext")
+                .scripts
+                .ctx
+        })
+    }
+
+    fn ctx_mut(&mut self) -> &mut GlobalContext {
+        self.global_ctx.as_mut().unwrap_or_else(|| {
+            &mut self
+                .player
+                .as_mut()
                 .expect("either player or MainContext must have GlobalContext")
                 .scripts
                 .ctx
@@ -224,22 +237,24 @@ impl MainContext {
         } else {
             true
         };
+
         let multi_progress = MultiProgress::new();
         let http_handling = args.http_handling.clone();
         MainContext {
             case_ids,
-            output,
             output_was_empty,
             pb: multi_progress.add(ProgressBar::new_spinner()),
             multi_progress,
             player: None,
             global_ctx: Some(GlobalContext {
                 args,
+                output,
                 client: Client::builder()
                     .user_agent("aaoffline")
                     .https_only(http_handling == HttpHandling::Disallow)
                     .build()
                     .expect("client cannot be built"),
+                case_output_mapping: HashMap::new(),
             }),
         }
     }
@@ -281,24 +296,23 @@ impl MainContext {
     /// If [`only_ours`] is true, the directory will only be removed if it was empty before we started.
     /// For multiple cases, only the individual case directories will be removed.
     async fn cleanup_data(&self, only_ours: bool) {
-        assert_ne!(self.output, PathBuf::from("/"), "We will not remove /!");
+        let output = &self.ctx().output;
+        assert_ne!(output, &PathBuf::from("/"), "We will not remove /!");
         if self.case_ids.len() == 1 {
             // We will simply remove everything under the folder, or the file, if the output is a file.
-            if Path::new(&self.output).is_file() {
-                tokio::fs::remove_file(&self.output)
-                    .await
-                    .unwrap_or_else(|e| {
-                        if let io::ErrorKind::NotFound = e.kind() {
-                            // Ignore if already deleted.
-                        } else {
-                            error!(
-                                "Could not remove file {}: {e}. Please remove it manually.",
-                                self.output.display()
-                            );
-                        }
-                    });
-            } else if (!only_ours || self.output_was_empty) && self.output != PathBuf::from(".") {
-                tokio::fs::remove_dir_all(&self.output)
+            if Path::new(&output).is_file() {
+                tokio::fs::remove_file(&output).await.unwrap_or_else(|e| {
+                    if let io::ErrorKind::NotFound = e.kind() {
+                        // Ignore if already deleted.
+                    } else {
+                        error!(
+                            "Could not remove file {}: {e}. Please remove it manually.",
+                            output.display()
+                        );
+                    }
+                });
+            } else if (!only_ours || self.output_was_empty) && output != &PathBuf::from(".") {
+                tokio::fs::remove_dir_all(&output)
                     .await
                     .unwrap_or_else(|e| {
                         if let io::ErrorKind::NotFound = e.kind() {
@@ -306,20 +320,20 @@ impl MainContext {
                         } else {
                             error!(
                                 "Could not remove directory {}: {e}. Please remove it manually.",
-                                self.output.display()
+                                output.display()
                             );
                         }
                     });
             } else {
                 warn!(
                     "Directory {} already contained files, will not clean up directory.",
-                    self.output.display()
+                    output.display()
                 );
             }
         } else {
             // Otherwise, we will remove the case ID directories.
             for case_id in &self.case_ids {
-                let case_dir = self.output.join(case_id.to_string());
+                let case_dir = output.join(case_id.to_string());
                 tokio::fs::remove_dir_all(&case_dir)
                     .await
                     .unwrap_or_else(|e| {
@@ -441,7 +455,7 @@ impl MainContext {
         let player = self.player.as_mut().unwrap();
         let site_data = &mut player.site_data;
         let ctx = &player.scripts.ctx;
-        let mut handler = AssetDownloader::new(self.output.clone(), site_data, ctx);
+        let mut handler = AssetDownloader::new(ctx.output.clone(), site_data, ctx);
         let multiple = cases.len() > 1;
         // We need to remember these because we overwrite them while collecting downloads,
         // and we may collect downloads more than once (for multiple cases), in which case we'd
@@ -455,9 +469,9 @@ impl MainContext {
                 .clone_from(&original_default_places);
             let output = if multiple {
                 // Case data needs to be put into the directory of that case.
-                self.output.join(PathBuf::from(case.filename().to_string()))
+                ctx.output.join(PathBuf::from(case.filename().to_string()))
             } else {
-                self.output.clone()
+                ctx.output.clone()
             };
             // May need to create the directory first.
             if !ctx.args.one_html_file {
@@ -544,6 +558,7 @@ async fn main() -> Result<()> {
     let mut cases: Vec<_> = ctx.retrieve_case_infos().await?.into_iter().collect();
     let num_cases = cases.len();
     let one_case = num_cases == 1;
+    let output = &mut ctx.ctx_mut().output;
 
     if one_case && original_output.is_none() {
         // We need to update the output name, now that we know the title.
@@ -551,29 +566,22 @@ async fn main() -> Result<()> {
         if one_file {
             name += ".html";
         }
-        ctx.output = PathBuf::from(name);
+        *output = PathBuf::from(name);
     } else if one_case
         && one_file
-        && ctx
-            .output
+        && output
             .extension()
             .is_none_or(|x| x.to_ascii_lowercase() != "html")
     {
-        if ctx.output.is_dir() {
-            ctx.output = ctx.output.join(cases.first().unwrap().filename());
+        if output.is_dir() {
+            *output = output.join(cases.first().unwrap().filename());
         }
-        ctx.output.set_extension("html");
+        output.set_extension("html");
     }
+    let output = &ctx.ctx().output;
 
     // Empty directories are fine if they exist already.
-    if ctx.output.exists()
-        && ctx
-            .output
-            .read_dir()
-            .ok()
-            .and_then(|mut x| x.next())
-            .is_some()
-    {
+    if output.exists() && output.read_dir().ok().and_then(|mut x| x.next()).is_some() {
         if ctx.ctx().args.remove_existing {
             info!("Output exists already, deleting...");
             ctx.cleanup_data(false).await;
@@ -583,15 +591,29 @@ async fn main() -> Result<()> {
                 .args
                 .cases
                 .iter()
-                .any(|x| ctx.output.join(x.to_string()).exists())
+                .any(|x| output.join(x.to_string()).exists())
         {
             error!(
                 "Output at {} already exists. Please remove it or use --remove-existing.",
-                ctx.output.display()
+                output.display()
             );
             std::process::exit(exitcode::DATAERR);
         }
     }
+
+    let output = output.clone();
+    let cases_output = &mut ctx.ctx_mut().case_output_mapping;
+    cases_output.extend(cases.iter().map(|case| {
+        (
+            case.id(),
+            match (one_case, one_file) {
+                (true, true) => output.clone(),
+                (true, false) => output.join("index.html"),
+                (false, true) => output.join(case.filename() + ".html"),
+                (false, false) => output.join(case.filename()).join("index.html"),
+            },
+        )
+    }));
 
     ctx.pb.finish_and_clear();
     info!(
@@ -629,7 +651,7 @@ async fn main() -> Result<()> {
     ctx.retrieve_player_sources().await?;
 
     let original_state = ctx.player.as_ref().unwrap().save();
-    let mut output_path: PathBuf = PathBuf::new();
+    let mut output_path: &PathBuf = &PathBuf::new();
     for case in cases {
         // Need to reset transformed player.
         ctx.show_step(
@@ -641,22 +663,21 @@ async fn main() -> Result<()> {
         );
         ctx.player.as_mut().unwrap().restore(original_state.clone());
         ctx.transform_player_blocks(&case).await?;
-        output_path = match (one_case, one_file) {
-            (true, true) => ctx.output.clone(),
-            (true, false) => ctx.output.join("index.html"),
-            (false, true) => ctx.output.join(case.filename() + ".html"),
-            (false, false) => ctx.output.join(case.filename()).join("index.html"),
-        };
-        ctx.output_player(&output_path).await?;
+        output_path = ctx
+            .ctx()
+            .case_output_mapping
+            .get(&case.id())
+            .expect("Unhandled case encountered");
+        ctx.output_player(output_path).await?;
     }
 
     let message = if one_case {
         format!("Case successfully written to {}!", &output_path.display())
     } else {
-        let output = if ctx.output == PathBuf::from(".") {
+        let output = if ctx.ctx().output == PathBuf::from(".") {
             "current directory"
         } else {
-            &ctx.output.display().to_string()
+            &ctx.ctx().output.display().to_string()
         };
         format!("{num_cases} cases successfully written to {output}!",)
     };
