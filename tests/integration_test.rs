@@ -15,6 +15,7 @@ use headless_chrome::{
             events::{EntryAddedEvent, EntryAddedEventParams},
             LogEntry, LogEntryLevel,
         },
+        Page::events::JavascriptDialogOpeningEvent,
     },
     Browser, LaunchOptionsBuilder,
 };
@@ -32,6 +33,8 @@ const THE_TORRENTIAL_TURNABOUT: &str = "https://aaonline.fr/player.php?trial_id=
 const TURNABOUT_OF_COURAGE: &str = "http://aceattorney.sparklin.org/jeu.php?id_proces=27826";
 // This one has evidence without an icon, which caused issue #3:
 const BROKEN_COMMANDMENTS: &str = "140935";
+/// This one is a sequence that immediately redirects to the next entry upon proceeding.
+const SEQUENCE_TEST: &str = "148564";
 
 // Cases used in multi-download test:
 const MULTI_CASES: [&str; 4] = [
@@ -87,36 +90,52 @@ fn example_cases(
 ) {
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Source {
+    Console,
+    Dialog,
+}
+
 #[derive(Debug)]
 struct JsError {
-    messages: Vec<String>,
+    errors: Vec<(String, Source)>,
 }
 
 impl Display for JsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "JavaScript errors: {}", self.messages.join(","))
+        write!(
+            f,
+            "JavaScript errors: {}",
+            self.errors.iter().map(|x| &x.0).join(",")
+        )
     }
 }
-impl Error for JsError {}
 
-impl JsError {
-    fn check_messages(msgs: &[LogEntry]) -> Result<(), JsError> {
-        let messages: Vec<String> = msgs
-            .iter()
-            .filter(|x| x.level == LogEntryLevel::Error)
-            .map(|x| x.text.clone())
-            .collect();
-        if messages.is_empty() {
-            Ok(())
-        } else {
-            Err(JsError { messages })
-        }
-    }
-}
+impl Error for JsError {}
 
 #[derive(Debug, Default)]
 struct JsListener {
     messages: Arc<Mutex<Vec<LogEntry>>>,
+    dialogs: Arc<Mutex<Vec<String>>>,
+}
+
+impl JsListener {
+    /// Makes sure that there are no error messages or dialogs.
+    fn check_errors(&self) -> Result<(), JsError> {
+        let msgs = self.messages.lock().unwrap();
+        let messages = msgs
+            .iter()
+            .filter(|x| x.level == LogEntryLevel::Error)
+            .map(|x| (x.text.clone(), Source::Console));
+        let dlgs = self.dialogs.lock().unwrap();
+        let dialogs = dlgs.iter().map(|x| (x.clone(), Source::Dialog));
+        let errors = messages.chain(dialogs).collect_vec();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(JsError { errors })
+        }
+    }
 }
 
 impl EventListener<Event> for JsListener {
@@ -126,11 +145,20 @@ impl EventListener<Event> for JsListener {
         }) = event
         {
             self.messages.lock().unwrap().push(entry.clone());
+        } else if let Event::PageJavascriptDialogOpening(JavascriptDialogOpeningEvent {
+            params: x,
+        }) = event
+        {
+            self.dialogs.lock().unwrap().push(x.message.clone());
         }
     }
 }
 
-fn verify_with_browser(path: &str, query: Option<&str>) -> Result<(), Box<dyn Error>> {
+fn verify_with_browser_common(
+    path: &str,
+    query: Option<&str>,
+    with_redirection: bool,
+) -> Result<(), Box<dyn Error>> {
     let options = LaunchOptionsBuilder::default().build()?;
     let browser = Browser::new(options)?;
     let tab = browser.new_tab()?;
@@ -145,12 +173,28 @@ fn verify_with_browser(path: &str, query: Option<&str>) -> Result<(), Box<dyn Er
     tab.wait_until_navigated()?;
 
     // We click the "Start" button and wait a little while.
-    let start_button = tab.find_element("#start")?;
-    start_button.click()?;
+    tab.find_element("#start")?.click()?;
+
+    let proceeds = tab.wait_for_elements("#proceed")?;
+    assert!(proceeds.len() == 1);
+    let proceed = proceeds.first();
+    proceed.unwrap().click()?;
+    if with_redirection {
+        std::thread::sleep(Duration::from_millis(500));
+        tab.wait_until_navigated()?;
+        tab.find_element("#start")?.click()?;
+    }
     let weak: Weak<dyn EventListener<Event> + Send + Sync> = Arc::downgrade(&listener) as Weak<_>;
     tab.remove_event_listener(&weak)?;
-    let messages = listener.messages.lock().unwrap();
-    JsError::check_messages(&messages).map_err(Into::into)
+    listener.check_errors().map_err(Into::into)
+}
+
+fn verify_with_browser(path: &str, query: Option<&str>) -> Result<(), Box<dyn Error>> {
+    verify_with_browser_common(path, query, false)
+}
+
+fn verify_with_browser_redirected(path: &str, query: Option<&str>) -> Result<(), Box<dyn Error>> {
+    verify_with_browser_common(path, query, true)
 }
 
 #[rstest]
@@ -185,10 +229,11 @@ fn test_html5_cors_error(mut cmd: Cmd) {
         .success();
     let errors = verify_with_browser(cmd.path_as_str(), None)
         .expect_err("expected CORS errors when not using HTML5 audio");
-    if let Some(JsError { messages }) = errors.downcast_ref::<JsError>() {
-        assert!(messages
+    if let Some(JsError { errors }) = errors.downcast_ref::<JsError>() {
+        assert!(errors
             .iter()
-            .all(|x| x.contains("CORS") || x.contains("net::ERR_FAILED")));
+            .all(|x| x.1 == Source::Console
+                && (x.0.contains("CORS") || x.0.contains("net::ERR_FAILED"))));
     } else {
         panic!("expected JsError, got {errors:?}");
     }
@@ -232,11 +277,24 @@ fn test_psyche_locks(mut cmd: Cmd, #[values(true, false)] one_file: bool) {
 
 #[rstest]
 #[timeout(Duration::from_secs(60 * 10))]
-fn test_sequence() {
+fn test_sequence_download() {
     let mut cmd = Command::cargo_bin("aaoffline").unwrap();
     cmd.args(["-s", "every"]);
     cmd.args(["-o", tempdir().unwrap().path().to_str().unwrap()]);
     cmd.arg(GAME_OF_TURNABOUTS).assert().success();
+}
+
+#[rstest]
+#[timeout(Duration::from_secs(60 * 10))]
+fn test_sequence_navigation() {
+    let mut cmd = Command::cargo_bin("aaoffline").unwrap();
+    let tmpdir = tempdir().unwrap();
+    let tmppath = tmpdir.path().to_str().unwrap();
+    cmd.args(["-s", "every"]);
+    cmd.args(["-o", tmppath]);
+    cmd.arg(SEQUENCE_TEST).assert().success();
+    verify_with_browser_redirected(&format!("{tmppath}/Sequence Test1_{SEQUENCE_TEST}"), None)
+        .unwrap();
 }
 
 #[rstest]
