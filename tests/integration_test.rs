@@ -128,7 +128,11 @@ impl JsListener {
         let msgs = self.messages.lock().unwrap();
         let messages = msgs
             .iter()
-            .filter(|x| x.level == LogEntryLevel::Error)
+            .filter(|x| {
+                x.level == LogEntryLevel::Error
+                // voice_singleblip_0 never exists, so we can ignore that error.
+                && !x.url.as_ref().is_some_and(|x| x.contains("voice_singleblip_0"))
+            })
             .map(|x| (x.text.clone(), Source::Console));
         let dlgs = self.dialogs.lock().unwrap();
         let dialogs = dlgs.iter().map(|x| (x.clone(), Source::Dialog));
