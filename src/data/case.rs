@@ -10,7 +10,7 @@ use const_format::formatcp;
 use log::{debug, trace};
 
 use anyhow::anyhow;
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::formats::Flexible;
@@ -139,7 +139,10 @@ impl Case {
     }
 
     /// Retrieves a case using the given [`case_id`] from Ace Attorney Online.
-    pub(crate) async fn retrieve_from_id(case_id: u32, client: &Client) -> Result<Case> {
+    pub(crate) async fn retrieve_from_id(
+        case_id: u32,
+        client: &ClientWithMiddleware,
+    ) -> Result<Case> {
         let case_script = client.get(format!(
         "{AAONLINE_BASE}/trial.js.php?trial_id={case_id}",
     )).send().await

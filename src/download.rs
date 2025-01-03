@@ -10,7 +10,7 @@ use indicatif::ProgressBar;
 use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use regex::Regex;
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use sanitize_filename::sanitize;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -31,7 +31,7 @@ use crate::{GlobalContext, HttpHandling};
 pub(crate) async fn download_url(
     url: &str,
     http_handling: &HttpHandling,
-    client: &Client,
+    client: &ClientWithMiddleware,
 ) -> Result<(PathBuf, Bytes)> {
     debug!("Downloading {url}...");
     let output = PathBuf::from("assets").join(url.split('/').last().unwrap_or(url));
@@ -147,7 +147,7 @@ impl JsonReference {
 pub(crate) struct AssetDownloader<'a> {
     /// The collector that will remember our asset download requests.
     collector: AssetCollector,
-    /// [reqwest] client to use for downloading assets.
+    /// A reference to the global context for the program.
     ctx: &'a GlobalContext,
 }
 

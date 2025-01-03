@@ -11,7 +11,7 @@ use indicatif::ProgressBar;
 use log::{debug, trace, warn};
 
 use regex::{Captures, Regex};
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use serde_json::Value;
 
 use std::collections::HashSet;
@@ -86,7 +86,11 @@ impl PlayerTransformation {
 
 impl PlayerScripts {
     /// Retrieves the JavaScript text for the module with the given [name].
-    async fn retrieve_js_text(client: &Client, name: &str, player_version: &str) -> Result<String> {
+    async fn retrieve_js_text(
+        client: &ClientWithMiddleware,
+        name: &str,
+        player_version: &str,
+    ) -> Result<String> {
         let url = if name == "default_data" {
             // This is a special case—we can unfortunately not use the source code of AAO here
             // and need to access the rendered version from aaonline.fr, since this is a PHP file.
