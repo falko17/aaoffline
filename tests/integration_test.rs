@@ -31,6 +31,8 @@ const PSYCHE_LOCK_TEST: &str = "89247";
 const THE_TORRENTIAL_TURNABOUT: &str = "https://aaonline.fr/player.php?trial_id=99015";
 // To test if old URLs work:
 const TURNABOUT_OF_COURAGE: &str = "http://aceattorney.sparklin.org/jeu.php?id_proces=27826";
+/// To test if old URLs with english names work:
+const REM: &str = "http://aceattorney.sparklin.org/player.php?trial_id=80494";
 // This one has evidence without an icon, which caused issue #3:
 const BROKEN_COMMANDMENTS: &str = "140935";
 /// This one is a sequence that immediately redirects to the next entry upon proceeding.
@@ -84,7 +86,8 @@ fn example_cases(
         PSYCHE_LOCK_TEST,
         GAME_OF_TURNABOUTS,
         TURNABOUT_OF_COURAGE,
-        BROKEN_COMMANDMENTS
+        BROKEN_COMMANDMENTS,
+        REM
     )]
     case: &str,
 ) {
