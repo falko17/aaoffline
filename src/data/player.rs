@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 
 use const_format::formatcp;
 use indicatif::ProgressBar;
+use itertools::Itertools;
 use log::{debug, trace, warn};
 
 use regex::{Captures, Regex};
@@ -48,8 +49,6 @@ type ModuleTransformer = fn(&SiteData, &str, &mut String) -> Result<()>;
 pub(crate) struct PlayerScripts {
     /// The concatenated JavaScript modules for the player.
     pub(crate) scripts: Option<String>,
-    /// The set of modules that have already been encountered.
-    encountered_modules: HashSet<String>,
     /// The global context for this program.
     pub(crate) ctx: GlobalContext,
 }
@@ -84,6 +83,19 @@ impl PlayerTransformation {
     }
 }
 
+/// A JavaScript module for the AAO player.
+#[derive(Debug)]
+struct JsModule {
+    /// The name of the module.
+    name: String,
+    /// The names of modules that this module depends on.
+    deps: HashSet<String>,
+    /// The initialization code of the module.
+    init: String,
+    /// The contents of this module (excluding the initialization code).
+    content: String,
+}
+
 impl PlayerScripts {
     /// Retrieves the JavaScript text for the module with the given [name].
     async fn retrieve_js_text(
@@ -114,72 +126,145 @@ impl PlayerScripts {
             .context("Script could not be decoded as text")
     }
 
-    /// Retrieves the JS module with the given [name] and returns the JS code for it.
-    ///
-    /// If it has any dependencies, these will be recursively retrieved and put before the code of
-    /// the target module with the given [name].
-    async fn retrieve_js_module(
-        &mut self,
+    /// Retrieves the JS code for the AAO player and all of its recursive dependencies.
+    async fn retrieve_js_modules(
+        &self,
         site_data: &SiteData,
-        name: &str,
         pb: Option<&ProgressBar>,
         module_transformer: ModuleTransformer,
     ) -> Result<String> {
-        if name == "dom_loaded" || name == "page_loaded" || self.encountered_modules.contains(name)
-        {
-            // Page is already loaded.
-            return Ok(String::new());
+        let mut targets: Vec<String> = vec![String::from("player")];
+        let mut modules: Vec<JsModule> = vec![];
+        // First, we download the modules until all dependencies are satisfied.
+        while !targets.is_empty() {
+            let module_count = targets.len();
+            // First, download all modules currently in the queue.
+            for target in targets.drain(..) {
+                if target == "dom_loaded"
+                    || target == "page_loaded"
+                    || modules.iter().any(|x| x.name == target)
+                {
+                    // Page is already loaded.
+                    continue;
+                }
+                let module = self
+                    .retrieve_js_module(site_data, target, pb, module_transformer)
+                    .await?;
+                modules.push(module);
+            }
+
+            let existing_modules: HashSet<&String> = modules.iter().map(|x| &x.name).collect();
+            targets.extend(
+                modules[modules.len() - module_count..]
+                    .iter()
+                    .flat_map(|x| x.deps.clone())
+                    .filter(|x| !existing_modules.contains(x))
+                    .unique(),
+            );
+            trace!("Targets: {targets:?}");
         }
+        // Then, we combine the modules such that all dependencies are satisfied.
+        Ok(Self::combine_js_modules(modules))
+    }
+
+    /// Combines the given [`modules`] into JavaScript code such that the modules are loaded in the
+    /// correct order, with all dependencies satisfied.
+    fn combine_js_modules(mut modules: Vec<JsModule>) -> String {
+        let mut satisfied: HashSet<String> =
+            HashSet::from([String::from("page_loaded"), String::from("dom_loaded")]);
+        let mut mod_text = String::new();
+        while !modules.is_empty() {
+            trace!(
+                "Not satisfied: {}\nSatisfied so far: {satisfied:?}",
+                modules
+                    .iter()
+                    .map(|x| format!("{} with {:?}", x.name, x.deps))
+                    .collect_vec()
+                    .join("\n")
+            );
+            let previously_unsatisfied_modules = modules.len();
+            modules.retain_mut(|x| {
+                if satisfied.is_superset(&x.deps) {
+                    // All satisfied, can be entered and removed from modules.
+                    let JsModule {
+                        name,
+                        deps: _,
+                        init,
+                        content,
+                    } = x;
+                    satisfied.insert(name.clone());
+                    trace!("{name} is satisfied");
+                    // We start with a comment identifying this module to make debugging easier.
+                    mod_text.push_str(&format!("// {name}.js\n\n"));
+                    // Then its init function. This needs to be an actual function (or lambda) because it may
+                    // contain `return` statements. We will execute it after every script has been loaded.
+                    mod_text.push_str(&format!("initScripts.push(() => {{{init}}});\n"));
+                    // And finally, the module content itself (without the module declaration).
+                    let mod_content = re::MODULE_REGEX
+                        .find(content)
+                        .expect("should have matched during retrieval already");
+                    content.replace_range(mod_content.start()..mod_content.end(), "\n");
+                    mod_text
+                        .push_str(&content.replace(&format!("Modules.complete('{name}')"), "\n"));
+                    // The following is necessary due to some naming conflicts that otherwise occur.
+                    mod_text = mod_text.replace("SoundHowler.", "window.SoundHowler.");
+                    false
+                } else {
+                    // Dependencies not yet satisfied, we'll try again later.
+                    trace!("{} is not satisfied", x.name);
+                    true
+                }
+            });
+            assert!(
+                modules.len() != previously_unsatisfied_modules,
+                "Downloaded JavaScript module set is missing dependencies."
+            );
+        }
+
+        mod_text
+    }
+
+    /// Retrieves the JS module with the given [`name`].
+    async fn retrieve_js_module(
+        &self,
+        site_data: &SiteData,
+        name: String,
+        pb: Option<&ProgressBar>,
+        module_transformer: ModuleTransformer,
+    ) -> Result<JsModule> {
         debug!("Retrieving JS module {name}");
-        self.encountered_modules.insert(name.to_string());
 
         let mut text =
-            Self::retrieve_js_text(&self.ctx.client, name, &self.ctx.args.player_version).await?;
+            Self::retrieve_js_text(&self.ctx.client, &name, &self.ctx.args.player_version).await?;
         if let Some(x) = pb {
             x.inc(1);
         }
 
-        module_transformer(site_data, name, &mut text)?;
+        module_transformer(site_data, &name, &mut text)?;
 
         let captures = re::MODULE_REGEX
             .captures(&text)
             .context("AAO JS script seemingly changed format, this means the script needs to be updated to work with the newest AAO version.")?;
-        let mod_content = captures.get(0).unwrap();
         let mod_name = captures.get(1).unwrap().as_str();
         assert_eq!(name, mod_name);
         let dep_text = captures.get(2).unwrap().as_str().replace('\'', "\"");
         let dep_value =
             serde_json::from_str::<Value>(&dep_text).context("Could not parse dependency array")?;
-        let deps: Vec<&str> = dep_value
+        let deps = dep_value
             .as_array()
             .context("Dependency array is not actually an array")?
             .iter()
-            .map(|y| y.as_str())
-            .collect::<Option<Vec<&str>>>()
+            .map(|y| y.as_str().map(ToString::to_string))
+            .collect::<Option<HashSet<String>>>()
             .context("Dependency array contains some non-strings")?;
-        let init = captures.get(3).unwrap().as_str();
+        let init = captures.get(3).unwrap().as_str().to_string();
 
-        // First, we add any dependencies of this module at the top.
-        let mut mod_text = String::new();
-        for dependency in deps {
-            mod_text.push_str(
-                &Box::pin(self.retrieve_js_module(site_data, dependency, pb, module_transformer))
-                    .await?,
-            );
-        }
-        // Then, a comment identifying this module to make debugging easier.
-        mod_text.push_str(&format!("// {name}.js\n\n"));
-        // Then its init function. This needs to be an actual function (or lambda) because it may
-        // contain `return` statements. We will execute it after every script has been loaded.
-        mod_text.push_str(&format!("initScripts.push(() => {{{init}}});\n"));
-        // And finally, the module content itself (without the module declaration).
-        trace!("{:?}", mod_content);
-        text.replace_range(mod_content.start()..mod_content.end(), "\n");
-        text = text.replace(&format!("Modules.complete('{name}')"), "\n");
-        mod_text.push_str(&text);
-        // The following is necessary due to some naming conflicts that otherwise occur.
-        mod_text = mod_text.replace("SoundHowler.", "window.SoundHowler.");
-        Ok(mod_text)
+        Ok(JsModule {
+            name,
+            deps,
+            init,
+            content: text,
+        })
     }
 
     /// Retrieves the player scripts for the given [player] and transforms them.
@@ -226,7 +311,7 @@ window.addEventListener('load', function() {{
     initScripts.forEach((x) => x());
 }}, false);\n",
             String::from_utf8(common_js.1.to_vec())?,
-            self.retrieve_js_module(site_data, "player", Some(pb), transform_module)
+            self.retrieve_js_modules(site_data, Some(pb), transform_module)
                 .await?
         ));
         Ok(())
@@ -248,7 +333,6 @@ pub(crate) struct Player {
 pub(crate) struct SavedPlayerState {
     content: Option<String>,
     scripts: Option<String>,
-    encountered_modules: HashSet<String>,
 }
 
 impl Player {
@@ -256,14 +340,12 @@ impl Player {
         SavedPlayerState {
             content: self.content.clone(),
             scripts: self.scripts.scripts.clone(),
-            encountered_modules: self.scripts.encountered_modules.clone(),
         }
     }
 
     pub(crate) fn restore(&mut self, state: SavedPlayerState) {
         self.content = state.content;
         self.scripts.scripts = state.scripts;
-        self.scripts.encountered_modules = state.encountered_modules;
     }
 
     /// Creates a new player with the given [args].
@@ -277,7 +359,6 @@ impl Player {
             content: None,
             scripts: PlayerScripts {
                 scripts: Some(default_text),
-                encountered_modules: HashSet::new(),
                 ctx,
             },
         })
