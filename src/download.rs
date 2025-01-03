@@ -25,7 +25,7 @@ use crate::constants::re::REMOVE_QUERY_PARAMETERS_REGEX;
 use crate::constants::AAONLINE_BASE;
 use crate::data::case::Case;
 use crate::data::site::{SiteData, SitePaths};
-use crate::{GlobalContext, HttpHandling};
+use crate::{Args, GlobalContext, HttpHandling};
 
 /// Downloads a file from the given [url] and returns the output path and file content.
 pub(crate) async fn download_url(
@@ -58,8 +58,7 @@ pub(crate) async fn download_url(
         .with_context(|| {
             format!("Could not download file from {target}. Please check your internet connection.")
         })?
-        .error_for_status()
-        .with_context(|| format!("File at {target} seems to be inaccessible."))?
+        .error_for_status()?
         .bytes()
         .await?;
     Ok((output, content))
@@ -98,6 +97,44 @@ pub(crate) struct AssetDownload {
     json_ref: JsonReference,
     /// The data URL consisting of the asset data, if configured.
     data_url: Option<String>,
+    /// The case title for which this asset is downloaded.
+    case_title: String,
+}
+
+impl AssetDownload {
+    /// Handles the given [`err`] that occurred for the given [`asset`] and the given [`case_title`] by
+    /// emitting an error message and possibly terminating the program (depending on [`args`]).
+    fn handle_error_for(
+        asset: Option<&AssetDownload>,
+        err: &anyhow::Error,
+        case_title: Option<&str>,
+        args: &Args,
+    ) {
+        if asset.as_ref().is_some_and(|x| x.ignore_inaccessible)
+            // Some assets have empty URLs, we don't need to download these.
+            || asset.as_ref().is_none() && err.root_cause().is::<EmptyUrl>()
+        {
+            return;
+        }
+        error!(
+            "Could not download asset for case {}: {err}{}",
+            case_title.unwrap_or("[UNKNOWN CASE]"),
+            if args.continue_on_asset_error {
+                " (continuing anyway)"
+            } else {
+                " (set --continue-on-asset-error to ignore this)"
+            }
+        );
+        if !args.continue_on_asset_error {
+            std::process::exit(exitcode::UNAVAILABLE);
+        }
+    }
+
+    /// Handles the given [`err`] that occurred for this asset and the given [`case_title`] by
+    /// emitting an error message and possibly terminating the program (depending on [`args`]).
+    fn handle_error(&self, err: &anyhow::Error, case_title: &str, args: &Args) {
+        Self::handle_error_for(Some(self), err, Some(case_title), args);
+    }
 }
 
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
@@ -160,6 +197,8 @@ struct AssetCollector {
     default_icon_url: String,
     /// The output directory for the assets.
     output: PathBuf,
+    /// The case title for which assets are currently collected.
+    target_case_title: Option<String>,
 }
 
 impl AssetCollector {
@@ -169,6 +208,7 @@ impl AssetCollector {
             collected: vec![],
             default_icon_url,
             output,
+            target_case_title: None,
         }
     }
 
@@ -315,6 +355,11 @@ impl AssetCollector {
             ignore_inaccessible,
             json_ref,
             data_url: None,
+            case_title: self
+                .target_case_title
+                .as_ref()
+                .expect("case title must be set here")
+                .clone(),
         })
     }
 
@@ -399,11 +444,13 @@ impl<'a> AssetDownloader<'a> {
     }
 
     /// Downloads the given [assets] **in parallel** with the configured number of concurrent downloads.
+    ///
+    /// Returns a list of [assets] that were successfully downloaded.
     async fn download_assets(
         &self,
         assets: Vec<AssetDownload>,
         pb: &ProgressBar,
-    ) -> HashMap<AssetDownload, Result<()>> {
+    ) -> Vec<AssetDownload> {
         stream::iter(assets)
             .map(|mut asset| async move {
                 let download = self
@@ -413,11 +460,17 @@ impl<'a> AssetDownloader<'a> {
                         x
                     })
                     .await;
-                (asset, download)
+                download
+                    .inspect_err(|e| asset.handle_error(e, &asset.case_title, &self.ctx.args))
+                    .map(|()| asset)
+                    .ok()
             })
             .buffer_unordered(self.ctx.args.concurrent_downloads)
-            .collect()
+            .collect::<Vec<_>>()
             .await
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     /// Downloads the given [asset] and writes it to its set path.
@@ -530,6 +583,7 @@ impl<'a> AssetDownloader<'a> {
         case: &mut Case,
         site_data: &mut SiteData,
     ) -> Result<Vec<Result<AssetDownload>>> {
+        self.collector.target_case_title = Some(case.case_information.title.clone());
         let paths = &site_data.site_paths;
         let used_sprites = case.get_used_sprites();
         let used_places = case.get_used_places();
@@ -953,41 +1007,17 @@ impl<'a> AssetDownloader<'a> {
     ) -> Result<()> {
         pb.inc_length(downloads.len() as u64);
         let (successes, failures): (Vec<_>, Vec<_>) = downloads.into_iter().partition_result();
-        let downloads = self.download_assets(successes, pb).await;
-        let dl_failures: Vec<_> = downloads
-            .iter()
-            .filter_map(|x| x.1.as_ref().err().map(|e| (Some(x.0), e)))
-            .collect();
-        for (asset, err) in dl_failures
-            .into_iter()
-            .chain(failures.iter().map(|e| (None, e)))
-        {
-            if asset.as_ref().is_some_and(|x| x.ignore_inaccessible)
-                // Some assets have empty URLs, we don't need to download these.
-                || asset.as_ref().is_none() && err.root_cause().is::<EmptyUrl>()
-            {
-                continue;
-            }
-            error!(
-                "Could not download asset at {}: {err}{}",
-                asset.map_or("[UNKNOWN URL]", |x| &x.url),
-                if self.ctx.args.continue_on_asset_error {
-                    " (continuing anyway)"
-                } else {
-                    " (set --continue-on-asset-error to ignore this)"
-                }
-            );
-            if !self.ctx.args.continue_on_asset_error {
-                std::process::exit(exitcode::UNAVAILABLE);
-            }
+        for err in failures {
+            AssetDownload::handle_error_for(None, &err, None, &self.ctx.args);
         }
+        let successes = self.download_assets(successes, pb).await;
 
         if self.ctx.args.one_html_file {
             // We now need to write back the data URLs into the JSON.
             let mut case_map: HashMap<u32, &mut Case> =
                 cases.iter_mut().map(|x| (x.id(), x)).collect();
-            for asset in downloads.iter().filter(|x| x.1.is_ok()).map(|x| x.0) {
-                Self::rewrite_data(asset, &mut case_map, site_data);
+            for asset in successes {
+                Self::rewrite_data(&asset, &mut case_map, site_data);
             }
         }
         Ok(())
