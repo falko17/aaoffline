@@ -12,9 +12,10 @@ pub(crate) mod re {
         LazyLock::new(|| Regex::new(r"(?s)<\?php(.*?)\?>").unwrap());
 
     pub(crate) static CASE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-        // Old URL format: http://aceattorney.sparklin.org/jeu.php?id_proces=TRIAL_ID
+        // Old URL format: http://aceattorney.sparklin.org/jeu.php?id_proces=TRIAL_ID  (but it
+        // could also use the english `player.php?trial_id` format)
         // New URL format: https://aaonline.fr/player.php?trial_id=TRIAL_ID
-        Regex::new(r"https?://(?:(?:www\.)?aaonline\.fr/player\.php\?trial_id|aceattorney\.sparklin\.org/jeu\.php\?id_proces)=(\d+)").unwrap()
+        Regex::new(r"https?://(?:(?:www\.)?aaonline\.fr|aceattorney\.sparklin\.org)/(?:player\.php\?trial_id|jeu\.php\?id_proces)=(\d+)").unwrap()
     });
 
     pub(crate) static TRIAL_INFORMATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -87,6 +88,10 @@ pub(crate) mod re {
         // This one may look even worse than the previous ones, but look, I used named capture
         // groups this time! That's an improvement, right? ...Right?
         Regex::new(r#"generateImageElement\((?P<path>cfg\.picture_dir\s*\+\s*cfg\.locks_subdir\s*\+\s*(?P<type>[^+]*?\s*\+\s*)?['"](?P<name>[^'"]*?)\.gif\?id=['"](?P<id>.*?))\);"#).unwrap()
+    });
+
+    pub(crate) static REDIRECTION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"window\.location\.href\s*=\s*'\?trial_id='\s*\+\s*([^+\s]+)\s*\+\s*'&(save_data=.*?);").unwrap()
     });
 
     pub(crate) static REMOVE_QUERY_PARAMETERS_REGEX: LazyLock<Regex> =
