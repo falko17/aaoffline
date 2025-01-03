@@ -7,6 +7,7 @@ use crate::GlobalContext;
 use anyhow::{Context, Result};
 
 use const_format::formatcp;
+use futures::{stream, StreamExt};
 use indicatif::ProgressBar;
 use itertools::Itertools;
 use log::{debug, trace, warn};
@@ -137,31 +138,33 @@ impl PlayerScripts {
         let mut modules: Vec<JsModule> = vec![];
         // First, we download the modules until all dependencies are satisfied.
         while !targets.is_empty() {
-            let module_count = targets.len();
-            // First, download all modules currently in the queue.
-            for target in targets.drain(..) {
-                if target == "dom_loaded"
-                    || target == "page_loaded"
-                    || modules.iter().any(|x| x.name == target)
-                {
-                    // Page is already loaded.
-                    continue;
-                }
-                let module = self
-                    .retrieve_js_module(site_data, target, pb, module_transformer)
-                    .await?;
-                modules.push(module);
-            }
+            // First, download all modules currently in the queue in parallel.
+            let new_modules: Vec<JsModule> = stream::iter(targets.drain(..).filter(|target| {
+                target != "dom_loaded"
+                    && target != "page_loaded"
+                    && modules.iter().all(|x| &x.name != target)
+            }))
+            .map(|target| async {
+                self.retrieve_js_module(site_data, target, pb, module_transformer)
+                    .await
+            })
+            .buffer_unordered(self.ctx.args.concurrent_downloads)
+            .collect::<Vec<Result<JsModule>>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<JsModule>>>()?;
 
             let existing_modules: HashSet<&String> = modules.iter().map(|x| &x.name).collect();
             targets.extend(
-                modules[modules.len() - module_count..]
+                new_modules
                     .iter()
                     .flat_map(|x| x.deps.clone())
                     .filter(|x| !existing_modules.contains(x))
                     .unique(),
             );
             trace!("Targets: {targets:?}");
+
+            modules.extend(new_modules);
         }
         // Then, we combine the modules such that all dependencies are satisfied.
         Ok(Self::combine_js_modules(modules))
