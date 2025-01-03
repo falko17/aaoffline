@@ -778,6 +778,7 @@ impl Player {
                     // We need to go up one directory first.
                     target_path = format!("../{target_path}");
                 }
+                target_path = target_path.replace('\'', "\\'");
 
                 new_redirection.push_str(&format!(
                     "case {id}: window.location.href = '{target_path}' + '?{save};\nbreak;\n"
