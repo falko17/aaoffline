@@ -20,6 +20,9 @@ use indicatif::{MultiProgress, ProgressBar};
 use itertools::Itertools;
 use log::{debug, error, info, warn, Level};
 use reqwest::Client;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_retry::policies::ExponentialBackoff;
+use reqwest_retry::RetryTransientMiddleware;
 use serde::Serialize;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -103,6 +106,13 @@ struct Args {
     #[arg(short('j'), long, default_value_t = 5)]
     concurrent_downloads: usize,
 
+    /// How many times to retry downloads if they fail.
+    ///
+    /// Note that this is in addition to the first try, so a value of one will lead to two download
+    /// attempts if the first one failed.
+    #[arg(long, default_value_t = 2)]
+    retries: u32,
+
     /// Whether to download all trials contained in a sequence (if the given case is part of a
     /// sequence).
     #[arg(short('s'), long, value_enum, default_value_t)]
@@ -166,8 +176,8 @@ pub(crate) struct GlobalContext {
     args: Args,
     /// The output directory for the case.
     output: PathBuf,
-    /// The HTTP client to use for requests.
-    client: Client,
+    /// The [reqwest] HTTP client to use for requests.
+    client: ClientWithMiddleware,
     /// Mapping from case ID to output directory.
     case_output_mapping: HashMap<u32, PathBuf>,
 }
@@ -240,6 +250,16 @@ impl MainContext {
 
         let multi_progress = MultiProgress::new();
         let http_handling = args.http_handling.clone();
+        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(args.retries);
+        let client = ClientBuilder::new(
+            Client::builder()
+                .user_agent("aaoffline")
+                .https_only(http_handling == HttpHandling::Disallow)
+                .build()
+                .expect("client cannot be built"),
+        )
+        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+        .build();
         MainContext {
             case_ids,
             output_was_empty,
@@ -249,11 +269,7 @@ impl MainContext {
             global_ctx: Some(GlobalContext {
                 args,
                 output,
-                client: Client::builder()
-                    .user_agent("aaoffline")
-                    .https_only(http_handling == HttpHandling::Disallow)
-                    .build()
-                    .expect("client cannot be built"),
+                client,
                 case_output_mapping: HashMap::new(),
             }),
         }
@@ -383,7 +399,7 @@ impl MainContext {
     /// Downloads the case information for the given [ids], without downloading the sequences.
     async fn download_case_infos_no_sequence(
         ids: &[u32],
-        client: &Client,
+        client: &ClientWithMiddleware,
     ) -> Result<HashSet<Case>> {
         future::join_all(ids.iter().map(|x| Case::retrieve_from_id(*x, client)))
             .await
