@@ -566,6 +566,7 @@ async fn main() -> Result<()> {
     let one_file = args.one_html_file;
     env_logger::builder()
         .format_timestamp(None)
+        .format_suffix("\n\n") // Otherwise progress bar will overlap with log messages.
         .filter_level(args.verbose.log_level_filter())
         .init();
     let mut ctx = MainContext::new(args).await;
