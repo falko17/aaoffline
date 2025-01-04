@@ -19,6 +19,7 @@ use std::cell::OnceCell;
 use std::collections::hash_set::Drain;
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::iter;
 use std::path::{Path, PathBuf};
 use tokio::fs::{self};
 use tokio::io;
@@ -1059,6 +1060,8 @@ impl<'a> AssetDownloader<'a> {
                     x["base"].as_str().expect("profile base must be string"),
                 )
             })
+            // Handle default profile
+            .chain(iter::once((0, "Juge")))
             .collect();
         let used_default_sprites = used_sprites
             .into_iter()
