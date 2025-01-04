@@ -143,7 +143,6 @@ pub(crate) mod php {
             let whole_match = block_match.get(0).unwrap();
             let start = whole_match.start();
             let end = whole_match.end();
-            trace!("PHP block: {text}");
 
             let visited_until_now = visited.clone();
             let copied_text = text.clone();

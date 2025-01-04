@@ -37,6 +37,8 @@ const REM: &str = "http://aceattorney.sparklin.org/player.php?trial_id=80494";
 const BROKEN_COMMANDMENTS: &str = "140935";
 /// This one is a sequence that immediately redirects to the next entry upon proceeding.
 const SEQUENCE_TEST: &str = "148564";
+/// This one uses assets whose file extensions change after redirects.
+const DRAGON: &str = "83543";
 
 // Cases used in multi-download test:
 const MULTI_CASES: [&str; 4] = [
@@ -87,7 +89,8 @@ fn example_cases(
         GAME_OF_TURNABOUTS,
         TURNABOUT_OF_COURAGE,
         BROKEN_COMMANDMENTS,
-        REM
+        REM,
+        DRAGON
     )]
     case: &str,
 ) {
@@ -129,7 +132,8 @@ impl JsListener {
         let messages = msgs
             .iter()
             .filter(|x| {
-                x.level == LogEntryLevel::Error
+                x.level == LogEntryLevel::Info && x.text.contains("Failed to load")
+                    || x.level == LogEntryLevel::Error
                 // voice_singleblip_0 never exists, so we can ignore that error.
                 && !x.url.as_ref().is_some_and(|x| x.contains("voice_singleblip_0"))
             })
@@ -165,6 +169,7 @@ fn verify_with_browser_common(
     path: &str,
     query: Option<&str>,
     with_redirection: bool,
+    append_index: bool,
 ) -> Result<(), Box<dyn Error>> {
     let options = LaunchOptionsBuilder::default().build()?;
     let browser = Browser::new(options)?;
@@ -174,7 +179,8 @@ fn verify_with_browser_common(
     let listener: Arc<JsListener> = Arc::new(JsListener::default());
     tab.add_event_listener(listener.clone())?;
     tab.navigate_to(&format!(
-        "file://{path}/index.html{}",
+        "file://{path}{}.html{}",
+        if append_index { "/index" } else { "" },
         query.unwrap_or_default()
     ))?;
     tab.wait_until_navigated()?;
@@ -197,11 +203,15 @@ fn verify_with_browser_common(
 }
 
 fn verify_with_browser(path: &str, query: Option<&str>) -> Result<(), Box<dyn Error>> {
-    verify_with_browser_common(path, query, false)
+    verify_with_browser_common(path, query, false, true)
 }
 
-fn verify_with_browser_redirected(path: &str, query: Option<&str>) -> Result<(), Box<dyn Error>> {
-    verify_with_browser_common(path, query, true)
+fn verify_with_browser_redirected(
+    path: &str,
+    query: Option<&str>,
+    one_file: bool,
+) -> Result<(), Box<dyn Error>> {
+    verify_with_browser_common(path, query, true, !one_file)
 }
 
 #[rstest]
@@ -293,15 +303,22 @@ fn test_sequence_download() {
 
 #[rstest]
 #[timeout(Duration::from_secs(60 * 10))]
-fn test_sequence_navigation() {
+fn test_sequence_navigation(#[values(true, false)] one_file: bool) {
     let mut cmd = Command::cargo_bin("aaoffline").unwrap();
     let tmpdir = tempdir().unwrap();
     let tmppath = tmpdir.path().to_str().unwrap();
     cmd.args(["-s", "every"]);
     cmd.args(["-o", tmppath]);
+    if one_file {
+        cmd.arg("-1");
+    }
     cmd.arg(SEQUENCE_TEST).assert().success();
-    verify_with_browser_redirected(&format!("{tmppath}/Sequence Test1_{SEQUENCE_TEST}"), None)
-        .unwrap();
+    verify_with_browser_redirected(
+        &format!("{tmppath}/Sequence Test1_{SEQUENCE_TEST}"),
+        None,
+        one_file,
+    )
+    .unwrap();
 }
 
 #[rstest]
