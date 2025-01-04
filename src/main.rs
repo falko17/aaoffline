@@ -5,6 +5,7 @@
 pub(crate) mod constants;
 pub(crate) mod data;
 pub(crate) mod download;
+mod middleware;
 pub(crate) mod transform;
 
 use anyhow::{Context, Result};
@@ -19,6 +20,7 @@ use human_panic::setup_panic;
 use indicatif::{MultiProgress, ProgressBar};
 use itertools::Itertools;
 use log::{debug, error, info, warn, Level};
+use middleware::AaofflineMiddleware;
 use reqwest::Client;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::policies::ExponentialBackoff;
@@ -138,6 +140,10 @@ struct Args {
     #[arg(long)]
     disable_html5_audio: bool,
 
+    /// Whether to disable the automatic fixing of photobucket watermarks.
+    #[arg(long)]
+    disable_photobucket_fix: bool,
+
     #[cfg(not(debug_assertions))]
     #[command(flatten)]
     verbose: clap_verbosity_flag::Verbosity<InfoLevel>,
@@ -247,6 +253,7 @@ impl MainContext {
                 .expect("client cannot be built"),
         )
         .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+        .with_init(AaofflineMiddleware::from(&args))
         .build();
         MainContext {
             case_ids,

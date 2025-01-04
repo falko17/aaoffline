@@ -9,6 +9,7 @@ Downloads cases from [Ace Attorney Online](https://aaonline.fr) to be playable o
 - Download multiple cases at once.
 - Use the `-1` flag to compile the case into a single HTML file, without the need for a separate assets folder.
 - Choose a specific version of the Ace Attorney Online player (e.g., if a case only works with an older version).
+- Automatically remove photobucket watermarks from downloaded assets.
 
 ## Usage
 
