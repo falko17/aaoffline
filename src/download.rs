@@ -456,7 +456,7 @@ impl<'a> AssetDownloader<'a> {
     /// [`max_locks`] for the case.
     ///
     /// This will attempt to create symbolic links for the psyche lock files, but will fall back to
-    /// using copies if symbolic links are not supported. Panics if that also doesn't work.
+    /// using hard-links if symbolic links are not supported. Panics if that also doesn't work.
     async fn collect_psyche_locks_file(&mut self, name: &str, max_locks: u8, site_data: &SiteData) {
         let file_value = Value::String(name.to_string());
         let asset = self.collector.collect_download(
@@ -484,8 +484,17 @@ impl<'a> AssetDownloader<'a> {
                     .map(|future| async move {
                         let (p, result) = future.await;
                         if let Err(e) = result {
-                            warn!("Could not create symbolic link: {e}. Copying file instead.");
-                            fs::copy(path, p).await.expect("Could not copy file");
+                            warn!(
+                                "Could not create symbolic link: {e}. Hard-linking file instead."
+                            );
+                            // Hard-links will only work if there's already a file here, so we'll
+                            // create a place-holder.
+                            fs::File::create(path)
+                                .await
+                                .expect("Could not create placeholder psyche-lock");
+                            fs::hard_link(path, p)
+                                .await
+                                .expect("Could not hard-link file");
                         }
                     }),
             )
