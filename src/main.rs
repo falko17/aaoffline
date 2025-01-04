@@ -14,7 +14,7 @@ use constants::re;
 use data::case::{Case, Sequence};
 use data::player::Player;
 use download::AssetDownloader;
-use futures::future;
+use futures::{future, TryFutureExt};
 use human_panic::setup_panic;
 use indicatif::{MultiProgress, ProgressBar};
 use itertools::Itertools;
@@ -30,8 +30,6 @@ use std::io::{stdin, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::{fs, io};
-use tokio_stream::wrappers::ReadDirStream;
-use tokio_stream::StreamExt;
 
 #[cfg(debug_assertions)]
 use clap_verbosity_flag::DebugLevel;
@@ -83,7 +81,7 @@ struct Args {
     /// If this is not passed, will use the title + ID of the case.
     /// It multiple cases are downloaded, they will all be put under this directory (which, by
     /// default, will be the current directory).
-    #[arg(short('o'), long)]
+    #[arg(short, long)]
     output: Option<PathBuf>,
 
     /// The branch or commit name of Ace Attorney Online that shall be used for the player.
@@ -95,12 +93,12 @@ struct Args {
     language: String,
 
     /// Whether to continue when an asset for the case could not be downloaded.
-    #[arg(long, default_value_t = false)]
+    #[arg(short, long, default_value_t = false)]
     continue_on_asset_error: bool,
 
-    /// Whether to overwrite any existing output files.
+    /// Whether to replace any existing output files.
     #[arg(short('r'), long, default_value_t = false)]
-    remove_existing: bool,
+    replace_existing: bool,
 
     /// How many concurrent downloads to use.
     #[arg(short('j'), long, default_value_t = 5)]
@@ -178,15 +176,13 @@ pub(crate) struct GlobalContext {
     output: PathBuf,
     /// The [reqwest] HTTP client to use for requests.
     client: ClientWithMiddleware,
-    /// Mapping from case ID to output directory.
+    /// Mapping from case ID to output file.
     case_output_mapping: HashMap<u32, PathBuf>,
 }
 
 /// The main context for the program.
 #[derive(Debug)]
 struct MainContext {
-    /// Whether the output directory was empty before we started.
-    output_was_empty: bool,
     /// The IDs of the cases to download.
     case_ids: Vec<u32>,
     /// The progress bar for the main step indicator.
@@ -225,7 +221,7 @@ impl MainContext {
     }
 
     /// Creates a new main context from the given [args].
-    async fn new(args: Args) -> MainContext {
+    fn new(args: Args) -> MainContext {
         let case_ids = args.cases.clone();
 
         let output = args.output.clone().unwrap_or_else(|| {
@@ -239,14 +235,6 @@ impl MainContext {
                 PathBuf::from(".")
             }
         });
-        let output_was_empty = if let Ok(rd) = tokio::fs::read_dir(&output).await {
-            ReadDirStream::new(rd)
-                .next()
-                .await
-                .is_none_or(|x| x.is_err())
-        } else {
-            true
-        };
 
         let multi_progress = MultiProgress::new();
         let http_handling = args.http_handling.clone();
@@ -262,7 +250,6 @@ impl MainContext {
         .build();
         MainContext {
             case_ids,
-            output_was_empty,
             pb: multi_progress.add(ProgressBar::new_spinner()),
             multi_progress,
             player: None,
@@ -307,69 +294,64 @@ impl MainContext {
         self.multi_progress.remove(pb);
     }
 
-    /// Removes all data in the output directory.
-    ///
-    /// If [`only_ours`] is true, the directory will only be removed if it was empty before we started.
-    /// For multiple cases, only the individual case directories will be removed.
-    async fn cleanup_data(&self, only_ours: bool) {
+    /// Removes all of our created data in the output directory.
+    async fn cleanup_data(&self) {
         let output = &self.ctx().output;
         assert_ne!(output, &PathBuf::from("/"), "We will not remove /!");
         if self.case_ids.len() == 1 {
-            // We will simply remove everything under the folder, or the file, if the output is a file.
-            if Path::new(&output).is_file() {
-                tokio::fs::remove_file(&output).await.unwrap_or_else(|e| {
+            Self::delete_case_at(output).await;
+        } else {
+            // Otherwise, we will remove the cases individually.
+            for filepath in self.ctx().case_output_mapping.values() {
+                if self.ctx().args.one_html_file {
+                    // Only need to delete the single file.
+                    Self::delete_case_at(filepath).await;
+                } else if let Some(parent) = filepath.parent() {
+                    // Need to delete both the assets folder and the index.html from the parent
+                    // directory.
+                    Self::delete_case_at(parent).await;
+                }
+            }
+        }
+    }
+
+    /// Deletes the case at the given [output], which may either be a single file or a directory
+    /// containing both an `index.html` file and an `assets` directory.
+    async fn delete_case_at(output: &Path) {
+        if Path::new(output).is_file() {
+            // We will simply remove the file if the output is a file.
+            tokio::fs::remove_file(output).await.unwrap_or_else(|e| {
+                if let io::ErrorKind::NotFound = e.kind() {
+                    // Ignore if already deleted.
+                } else {
+                    warn!(
+                        "Could not remove file {}: {e}. Please remove it manually.",
+                        output.display()
+                    );
+                }
+            });
+        } else if Path::new(output).is_dir() {
+            // We need to remove the assets folder and the index.html file.
+            tokio::fs::remove_dir_all(output.join("assets"))
+                .and_then(|()| tokio::fs::remove_file(output.join("index.html")))
+                .await
+                .unwrap_or_else(|e| {
                     if let io::ErrorKind::NotFound = e.kind() {
                         // Ignore if already deleted.
                     } else {
-                        error!(
-                            "Could not remove file {}: {e}. Please remove it manually.",
+                        warn!(
+                            "Could not remove content in {}: {e}. Please remove manually.",
                             output.display()
                         );
                     }
                 });
-            } else if (!only_ours || self.output_was_empty) && output != &PathBuf::from(".") {
-                tokio::fs::remove_dir_all(&output)
-                    .await
-                    .unwrap_or_else(|e| {
-                        if let io::ErrorKind::NotFound = e.kind() {
-                            // Ignore if already deleted.
-                        } else {
-                            error!(
-                                "Could not remove directory {}: {e}. Please remove it manually.",
-                                output.display()
-                            );
-                        }
-                    });
-            } else {
-                warn!(
-                    "Directory {} already contained files, will not clean up directory.",
-                    output.display()
-                );
-            }
-        } else {
-            // Otherwise, we will remove the case ID directories.
-            for case_id in &self.case_ids {
-                let case_dir = output.join(case_id.to_string());
-                tokio::fs::remove_dir_all(&case_dir)
-                    .await
-                    .unwrap_or_else(|e| {
-                        if let io::ErrorKind::NotFound = e.kind() {
-                            // Ignore if already deleted.
-                        } else {
-                            error!(
-                                "Could not remove directory {}: {e}. Please remove it manually.",
-                                case_dir.display()
-                            );
-                        }
-                    });
-            }
         }
     }
 
     /// Cleans up the data if the given [res] is an error, otherwise does nothing.
     async fn clean_on_fail(&self, res: Result<()>) -> Result<()> {
         if res.is_err() {
-            self.cleanup_data(true).await;
+            self.cleanup_data().await;
         }
         res
     }
@@ -542,19 +524,23 @@ impl MainContext {
 
     /// Output the finished player for the case to [`output_path`].
     async fn output_player(&self, output_path: &Path) -> Result<()> {
-        fs::create_dir_all(output_path.parent().unwrap()).await?;
-        fs::write(
-            &output_path,
-            self.player.as_ref().unwrap().content.as_ref().unwrap(),
+        self.clean_on_fail(
+            fs::create_dir_all(output_path.parent().unwrap())
+                .and_then(|()| {
+                    fs::write(
+                        &output_path,
+                        self.player.as_ref().unwrap().content.as_ref().unwrap(),
+                    )
+                })
+                .await
+                .with_context(|| {
+                    format!(
+                        "Could not write player to file {}. Please check your permissions.",
+                        output_path.display()
+                    )
+                }),
         )
         .await
-        .with_context(|| {
-            format!(
-                "Could not write player to file {}. Please check your permissions.",
-                output_path.display()
-            )
-        })?;
-        Ok(())
     }
 }
 
@@ -569,7 +555,7 @@ async fn main() -> Result<()> {
         .format_suffix("\n\n") // Otherwise progress bar will overlap with log messages.
         .filter_level(args.verbose.log_level_filter())
         .init();
-    let mut ctx = MainContext::new(args).await;
+    let mut ctx = MainContext::new(args);
 
     ctx.show_step(1, "Retrieving case information...");
     let mut cases: Vec<_> = ctx.retrieve_case_infos().await?.into_iter().collect();
@@ -612,29 +598,12 @@ async fn main() -> Result<()> {
             .as_ref()
             .unwrap();
         *output = PathBuf::from(&sequence.title);
+    } else if !one_case && original_output.is_none() {
+        // Downloaded cases are not part of a single sequence.
+        // We'll put them in the current directory.
+        *output = PathBuf::from(".");
     }
     let output = &ctx.ctx().output;
-
-    // Empty directories are fine if they exist already.
-    if output.exists() && output.read_dir().ok().and_then(|mut x| x.next()).is_some() {
-        if ctx.ctx().args.remove_existing {
-            info!("Output exists already, deleting...");
-            ctx.cleanup_data(false).await;
-        } else if ctx.ctx().args.cases.len() == 1
-            || ctx
-                .ctx()
-                .args
-                .cases
-                .iter()
-                .any(|x| output.join(x.to_string()).exists())
-        {
-            error!(
-                "Output at {} already exists. Please remove it or use --remove-existing.",
-                output.display()
-            );
-            std::process::exit(exitcode::DATAERR);
-        }
-    }
 
     let output = output.clone();
     let cases_output = &mut ctx.ctx_mut().case_output_mapping;
@@ -649,6 +618,25 @@ async fn main() -> Result<()> {
             },
         )
     }));
+
+    // If the user doesn't want to replace anything, check first if there is anything.
+    if !ctx.ctx().args.replace_existing {
+        for player_file in ctx.ctx().case_output_mapping.values() {
+            // Either there's the player file itself...
+            if player_file.is_file()
+            // ...or, if `-1` is not set, the `assets` directory (only important if it's non-empty).
+                || !ctx.ctx().args.one_html_file && player_file
+                    .parent()
+                    .and_then(|x| x.join("assets").read_dir().ok()).is_some_and(|mut x| x.next().is_some())
+            {
+                error!(
+                    "Output at \"{}\" already exists. Please remove it or use --replace-existing.",
+                    player_file.parent().unwrap_or(player_file).display()
+                );
+                std::process::exit(exitcode::DATAERR);
+            }
+        }
+    }
 
     ctx.pb.finish_and_clear();
     info!(
