@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use tokio::fs::{self};
+use tokio::io;
 
 use crate::constants::re::REMOVE_QUERY_PARAMETERS_REGEX;
 use crate::constants::AAONLINE_BASE;
@@ -497,6 +498,11 @@ impl<'a> AssetDownloader<'a> {
         orig: P,
         target: Q,
     ) -> Result<(), std::io::Error> {
+        if let Err(e) = tokio::fs::remove_file(target.as_ref()).await {
+            if e.kind() != io::ErrorKind::NotFound {
+                return Err(e);
+            }
+        }
         tokio::fs::symlink(orig, target).await
     }
 
@@ -506,6 +512,11 @@ impl<'a> AssetDownloader<'a> {
         orig: P,
         target: Q,
     ) -> Result<(), std::io::Error> {
+        if let Err(e) = tokio::fs::remove_file(target.as_ref()).await {
+            if e.kind() != io::ErrorKind::NotFound {
+                return Err(e);
+            }
+        }
         tokio::fs::symlink_file(orig, target).await
     }
 
