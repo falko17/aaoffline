@@ -10,31 +10,31 @@ use indicatif::ProgressBar;
 use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use regex::Regex;
+use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
 use sanitize_filename::sanitize;
 use serde_json::Value;
 use std::borrow::Cow;
+use std::cell::OnceCell;
+use std::collections::hash_set::Drain;
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
-use std::fmt::Display;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use tokio::fs;
+use tokio::fs::{self};
 
 use crate::constants::re::REMOVE_QUERY_PARAMETERS_REGEX;
 use crate::constants::AAONLINE_BASE;
 use crate::data::case::Case;
 use crate::data::site::{SiteData, SitePaths};
-use crate::{Args, GlobalContext, HttpHandling};
+use crate::{GlobalContext, HttpHandling};
 
 /// Downloads a file from the given [url] and returns the output path and file content.
 pub(crate) async fn download_url(
     url: &str,
     http_handling: &HttpHandling,
     client: &ClientWithMiddleware,
-) -> Result<(PathBuf, Bytes)> {
+) -> Result<(Url, Bytes)> {
     debug!("Downloading {url}...");
-    let output = PathBuf::from("assets").join(url.split('/').last().unwrap_or(url));
     let target = if url.starts_with("http://") {
         match http_handling {
             HttpHandling::AllowInsecure => url.to_string(),
@@ -51,17 +51,13 @@ pub(crate) async fn download_url(
     };
 
     // Then, download the file as bytes (since it may be binary).
-    let content = client
-        .get(&target)
-        .send()
-        .await
-        .with_context(|| {
-            format!("Could not download file from {target}. Please check your internet connection.")
-        })?
-        .error_for_status()?
-        .bytes()
-        .await?;
-    Ok((output, content))
+    let content = client.get(&target).send().await.with_context(|| {
+        format!("Could not download file from {target}. Please check your internet connection.")
+    })?;
+    // NOTE: We need to use the final URL for the output since the extension may differ.
+    let name = content.url().clone();
+    let content = content.error_for_status()?.bytes().await?;
+    Ok((name, content))
 }
 
 /// Converts the given [data] to a base64 data URL.
@@ -73,67 +69,44 @@ pub(crate) fn make_data_url(data: &Bytes) -> String {
     format!("data:{mime};base64,{}", BASE64_STANDARD.encode(data))
 }
 
-#[derive(Debug)]
-struct EmptyUrl;
-
-impl Display for EmptyUrl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Empty URL encountered.")
-    }
+/// Hashes the given [value] to a u64.
+fn hash(value: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
-impl Error for EmptyUrl {}
-
 /// An asset download request.
-#[derive(Debug, Hash, Clone, PartialEq, Eq)]
+///
+/// Two download requests are considered equal iff their URLs and output paths are the same.
+#[derive(Debug, Clone, Eq)]
 pub(crate) struct AssetDownload {
     /// The URL to download from.
     url: String,
     /// The path to save the downloaded file to.
-    path: PathBuf,
-    /// Whether to ignore inaccessible assets.
-    ignore_inaccessible: bool,
-    /// A reference to the original JSON containing the path to this asset.
-    json_ref: JsonReference,
-    /// The data URL consisting of the asset data, if configured.
-    data_url: Option<String>,
+    ///
+    /// Once this is written to, it must not be changed.
+    path: OnceCell<String>,
+    /// References to the original JSON containing the path to this asset.
+    ///
+    /// May be more than one if multiple paths reference this asset.
+    json_refs: HashSet<JsonReference>,
     /// The case title for which this asset is downloaded.
     case_title: String,
+    /// The path into which this asset should be put.
+    output_path: PathBuf,
 }
 
-impl AssetDownload {
-    /// Handles the given [`err`] that occurred for the given [`asset`] and the given [`case_title`] by
-    /// emitting an error message and possibly terminating the program (depending on [`args`]).
-    fn handle_error_for(
-        asset: Option<&AssetDownload>,
-        err: &anyhow::Error,
-        case_title: Option<&str>,
-        args: &Args,
-    ) {
-        if asset.as_ref().is_some_and(|x| x.ignore_inaccessible)
-            // Some assets have empty URLs, we don't need to download these.
-            || asset.as_ref().is_none() && err.root_cause().is::<EmptyUrl>()
-        {
-            return;
-        }
-        error!(
-            "Could not download asset for case {}: {err}{}",
-            case_title.unwrap_or("[UNKNOWN CASE]"),
-            if args.continue_on_asset_error {
-                " (continuing anyway)"
-            } else {
-                " (set --continue-on-asset-error to ignore this)"
-            }
-        );
-        if !args.continue_on_asset_error {
-            std::process::exit(exitcode::UNAVAILABLE);
-        }
+impl PartialEq for AssetDownload {
+    fn eq(&self, other: &Self) -> bool {
+        self.url == other.url && self.output_path == other.output_path
     }
+}
 
-    /// Handles the given [`err`] that occurred for this asset and the given [`case_title`] by
-    /// emitting an error message and possibly terminating the program (depending on [`args`]).
-    fn handle_error(&self, err: &anyhow::Error, case_title: &str, args: &Args) {
-        Self::handle_error_for(Some(self), err, Some(case_title), args);
+impl Hash for AssetDownload {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.url.hash(state);
+        self.output_path.hash(state);
     }
 }
 
@@ -191,8 +164,8 @@ pub(crate) struct AssetDownloader<'a> {
 /// Collects asset downloads and assigns unique filenames to them.
 #[derive(Debug)]
 struct AssetCollector {
-    /// The collected (possibly faulty) asset downloads.
-    collected: Vec<Result<AssetDownload>>,
+    /// The collected asset downloads.
+    collected: HashSet<AssetDownload>,
     /// The default icon URL.
     default_icon_url: String,
     /// The output directory for the assets.
@@ -205,38 +178,26 @@ impl AssetCollector {
     /// Creates a new asset collector.
     fn new(default_icon_url: String, output: PathBuf) -> AssetCollector {
         AssetCollector {
-            collected: vec![],
+            collected: HashSet::new(),
             default_icon_url,
             output,
             target_case_title: None,
         }
     }
 
-    /// Hashes the given [value] to a u64.
-    fn hash(value: &str) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        value.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    /// Checks whether a [path] exists already in the collected downloads.
-    fn path_exists(&self, path: &Path) -> bool {
-        // Need to use a lower-case comparison here, otherwise we'll run into problems on Windows
-        // (where the file system is usually case-insensitive).
-        let lower_path = path
-            .to_str()
-            .expect("Invalid path encountered")
-            .to_lowercase();
-        self.collected.iter().any(|x| {
-            x.as_ref()
-                .ok()
-                .and_then(|y| y.path.to_str())
-                .map_or(false, |y| y.to_lowercase() == lower_path)
-        })
+    /// Returns the [collected] asset whose URL matches the given [url] and the currently set
+    /// [output] path.
+    fn find_by_url(&self, url: &str) -> Option<&AssetDownload> {
+        self.collected
+            .iter()
+            .find(|x| x.url == url && x.output_path == self.output)
     }
 
     /// Creates a new unique path for the given [url] and [path].
-    fn new_path(&self, url: &str, path: &Path) -> PathBuf {
+    ///
+    /// The [url] will be used for hashing only, to ensure a unique output name,
+    /// while the [path]'s filename will be used for the output path's filename.
+    fn new_path(output: &Path, url: &str, path: &Path) -> PathBuf {
         let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("bin");
         // Remove any query parameters.
         let ext = REMOVE_QUERY_PARAMETERS_REGEX.replace(ext, "").to_string();
@@ -248,31 +209,20 @@ impl AssetCollector {
             .to_string();
         let name = urlencoding::decode(&name)
             .map(Cow::into_owned)
+            .map(|x| x.replace('%', "-"))
             .unwrap_or(name);
-        let first_choice = self
-            .output
+        let path = output
             .join("assets")
-            .join(sanitize(name.clone()))
+            .join(sanitize(format!("{name}-{}", hash(url))).to_lowercase())
             .with_extension(&ext);
-        // If we used this filename already, we need to append a hash.
-        if self.path_exists(&first_choice) {
-            self.output
-                .join("assets")
-                .join(sanitize(format!("{name}-{}", Self::hash(url))))
-                .with_extension(ext)
-        } else {
-            first_choice
-        }
-    }
-
-    /// Returns the target path for the given [url] and [file].
-    fn get_path(&self, url: &str, file: &Path) -> PathBuf {
-        // If we have an existing download for this URL, we need to use the same filename here.
-        self.collected
-            .iter()
-            .filter_map(|x| x.as_ref().ok())
-            .find(|x| x.url == url)
-            .map_or_else(|| self.new_path(url, file), |x| x.path.clone())
+        assert!(
+            path.parent()
+                .expect("parent dir must exist")
+                .ends_with("assets"),
+            "must end with assets/ but doesn't: {}",
+            path.display()
+        );
+        path
     }
 
     /// Creates a new asset download request.
@@ -286,19 +236,20 @@ impl AssetCollector {
     /// [^1]: Note that this will be the "case-local" path to the asset, which is distinct from the
     /// "case-global" path to the asset where it will be saved relative to the current directory.
     /// The "case-local" path should, for example, always start with "assets/".
-    fn make_download(
-        &self,
-        file_value: &mut Value,
+    fn collect_download(
+        &mut self,
+        file_value: &Value,
         path_components: Option<Vec<&str>>,
         external: Option<bool>,
         default_extension: Option<&str>,
-        filename: Option<&PathBuf>,
-        ignore_inaccessible: bool,
         json_ref: JsonReference,
-    ) -> Result<AssetDownload> {
+        force_early_name: bool,
+    ) -> Option<&AssetDownload> {
+        // First, we need to construct the URL to the target resource out of the given parameters.
         let file_string = file_value.as_str().unwrap_or(&self.default_icon_url).trim();
         if file_string.is_empty() {
-            return Err(EmptyUrl.into());
+            // We can ignore empty URLs.
+            return None;
         }
         let mut file = PathBuf::from(file_string);
         if file.extension().is_none() {
@@ -311,7 +262,7 @@ impl AssetCollector {
             &format!(
                 "{AAONLINE_BASE}/{}/{file_string}",
                 path_components
-                    .context("Non-external path needs path components!")?
+                    .expect("Non-external path needs path components!")
                     .join("/"),
             )
         } else if file_string.starts_with("http") {
@@ -319,106 +270,59 @@ impl AssetCollector {
         } else {
             &format!("{AAONLINE_BASE}/{file_string}")
         };
-        let path = self.get_path(url, filename.unwrap_or(&file));
-        if filename.is_some_and(|x| !path.ends_with(x)) {
-            return Err(anyhow!(
-                "Filename mismatch: Should be {}, but was {}",
-                filename.unwrap().display(),
-                path.display(),
-            ));
-        }
+
+        // Get rid of multiple consecutive slashes.
         let url = Regex::new(r"([^:/])/{2,}")
             .unwrap()
             .replace_all(url, "$1/")
             .to_string();
-        trace!("{url} to {}", path.display());
-        assert!(
-            path.parent()
-                .expect("parent dir must exist")
-                .ends_with("assets"),
-            "must end with assets/ but doesn't: {}",
-            path.display()
-        );
-        // Reassign icon to contain new name.
-        *file_value = Value::String(
-            // We need to strip the output prefix here, as the URL that's written to the trial data
-            // should be relative to where the index.html file lives.
-            path.strip_prefix(&self.output)?
-                .to_owned()
-                .into_os_string()
-                .into_string()
-                .expect("invalid path encountered"),
-        );
-        Ok(AssetDownload {
-            url,
-            path,
-            ignore_inaccessible,
-            json_ref,
-            data_url: None,
+
+        trace!("Creating asset for {url}");
+        let asset = AssetDownload {
+            url: url.clone(),
+            path: OnceCell::new(),
+            json_refs: HashSet::from([json_ref]),
             case_title: self
                 .target_case_title
                 .as_ref()
                 .expect("case title must be set here")
                 .clone(),
+            output_path: self.output.clone(),
+        };
+        let target_asset = if let Some(mut existing) = self.collected.take(&asset) {
+            // If an asset with this URL exists already, we'll add our JsonRef to it.
+            debug!("Duplicate asset for {url}");
+            existing.json_refs.extend(asset.json_refs);
+            // Then, re-add to the set.
+            existing
+        } else {
+            asset
+        };
+        if force_early_name {
+            let target_path = Self::new_path(&self.output, &target_asset.url, &file)
+                .to_str()
+                .expect("invalid path")
+                .to_string();
+            target_asset
+                .path
+                .set(target_path)
+                .expect("path was already set");
+        }
+        self.collected.insert(target_asset);
+        self.find_by_url(&url)
+    }
+
+    /// Makes the given [`path`] relative to the given [`output`] directory.
+    fn path_to_relative<'a>(path: &'a Path, output: &Path) -> &'a Path {
+        // We need to strip the output prefix here, as the URL that's written to the trial data
+        // should be relative to where the index.html file lives.
+        path.strip_prefix(output).unwrap_or_else(|_| {
+            panic!(
+                "could not strip prefix {} of {}",
+                path.display(),
+                output.display()
+            )
         })
-    }
-
-    /// Collects a download request for the given [`file_value`].
-    fn collect_download(
-        &mut self,
-        file_value: &mut Value,
-        path_components: Option<Vec<&str>>,
-        external: Option<bool>,
-        default_extension: Option<&str>,
-        json_ref: JsonReference,
-    ) {
-        self.collected.push(self.make_download(
-            file_value,
-            path_components,
-            external,
-            default_extension,
-            None,
-            false,
-            json_ref,
-        ));
-    }
-
-    /// Collects a download request for the given [`file_value`], using the given [`name`] as a
-    /// filename.
-    fn collect_download_with_name(
-        &mut self,
-        file_value: &mut Value,
-        name: &PathBuf,
-        path_components: Option<Vec<&str>>,
-        external: Option<bool>,
-        ignore_inaccessible: bool,
-        json_ref: JsonReference,
-    ) {
-        self.collected.push(self.make_download(
-            file_value,
-            path_components,
-            external,
-            None,
-            Some(name),
-            ignore_inaccessible,
-            json_ref,
-        ));
-    }
-
-    /// Returns the unique downloads that have been collected.
-    ///
-    /// Note that uniqueness in this context is determined by the *combination*
-    /// of filename and URL.
-    fn get_unique_downloads(&mut self) -> Vec<Result<AssetDownload>> {
-        let mut encountered_downloads: HashSet<AssetDownload> = HashSet::new();
-        self.collected
-            .drain(0..self.collected.len())
-            .filter(|x| {
-                x.as_ref()
-                    .ok()
-                    .is_none_or(|x| encountered_downloads.insert(x.clone()))
-            })
-            .collect()
     }
 }
 
@@ -443,6 +347,23 @@ impl<'a> AssetDownloader<'a> {
         self.collector.output = output;
     }
 
+    /// Handles the given asset [`err`] that occurred for the given [`case_title`] by
+    /// emitting an error message and possibly terminating the program (depending on [`args`]).
+    fn handle_asset_error(&self, err: &anyhow::Error, case_title: Option<&str>) {
+        error!(
+            "Could not download asset for case {}: {err}{}",
+            case_title.unwrap_or("[UNKNOWN CASE]"),
+            if self.ctx.args.continue_on_asset_error {
+                " (continuing anyway)"
+            } else {
+                " (set --continue-on-asset-error to ignore this)"
+            }
+        );
+        if !self.ctx.args.continue_on_asset_error {
+            std::process::exit(exitcode::UNAVAILABLE);
+        }
+    }
+
     /// Downloads the given [assets] **in parallel** with the configured number of concurrent downloads.
     ///
     /// Returns a list of [assets] that were successfully downloaded.
@@ -461,7 +382,7 @@ impl<'a> AssetDownloader<'a> {
                     })
                     .await;
                 download
-                    .inspect_err(|e| asset.handle_error(e, &asset.case_title, &self.ctx.args))
+                    .inspect_err(|e| self.handle_asset_error(e, Some(&asset.case_title)))
                     .map(|()| asset)
                     .ok()
             })
@@ -475,21 +396,35 @@ impl<'a> AssetDownloader<'a> {
 
     /// Downloads the given [asset] and writes it to its set path.
     async fn download_asset(&self, asset: &mut AssetDownload) -> Result<()> {
-        let (_, content) =
+        let (url, content) =
             download_url(&asset.url, &self.ctx.args.http_handling, &self.ctx.client).await?;
         if self.ctx.args.one_html_file {
-            asset.data_url = Some(make_data_url(&content));
+            // No need to write data anywhere but in the data URL.
+            asset
+                .path
+                .set(make_data_url(&content))
+                .expect("path must not be set already");
+        } else if let Some(path) = asset.path.get() {
+            // We need to reuse the existing path here.
+            Self::write_asset(&PathBuf::from(path), &content).await?;
         } else {
-            Self::write_asset(&asset.path, &content)
-                .await
-                .and_then(|()| {
-                    asset
-                        .path
-                        .clone()
-                        .into_os_string()
-                        .into_string()
-                        .map_err(|_| anyhow!("Encountered invalid path"))
-                })?;
+            // We'll assign a path based on the URL's ending.
+            let new_name = url
+                .path_segments()
+                .and_then(Iterator::last)
+                .unwrap_or(url.path());
+            let path =
+                AssetCollector::new_path(&asset.output_path, url.as_str(), Path::new(new_name));
+            Self::write_asset(&path, &content).await?;
+            asset
+                .path
+                .set(
+                    AssetCollector::path_to_relative(&path, &asset.output_path)
+                        .components()
+                        .map(|x| x.as_os_str().to_str().expect("invalid path"))
+                        .join("/"),
+                )
+                .expect("path must have been none here");
         }
         Ok(())
     }
@@ -521,22 +456,24 @@ impl<'a> AssetDownloader<'a> {
     /// This will attempt to create symbolic links for the psyche lock files, but will fall back to
     /// using copies if symbolic links are not supported. Panics if that also doesn't work.
     async fn collect_psyche_locks_file(&mut self, name: &str, max_locks: u8, site_data: &SiteData) {
-        let mut file_value = Value::String(name.to_string());
-        self.collector.collect_download(
-            &mut file_value,
+        let file_value = Value::String(name.to_string());
+        let asset = self.collector.collect_download(
+            &file_value,
             Some(site_data.site_paths.lock_path()),
             Some(false),
             Some("gif"),
             JsonReference::new(JsonSource::PsycheLock(name.to_string()), String::new()),
+            // We need to know the filename in advance when we have to download the psyche locks as
+            // files, because we'll create symlinks to them here already.
+            !self.ctx.args.one_html_file,
         );
         if self.ctx.args.one_html_file {
             // No need to do the symlinking here, as we're not actually creating files.
             return;
         }
-        let last = self.collector.collected.last().unwrap().as_ref();
         // Now we need to create the symbolic links to this file.
-        if let Ok(asset) = last {
-            let original_path = &asset.path;
+        if let Some(path) = asset.and_then(|x| x.path.get()) {
+            let original_path = PathBuf::from(path);
             let original_name = original_path.file_name().expect("must have file path");
             join_all(
                 (1..=max_locks)
@@ -546,9 +483,7 @@ impl<'a> AssetDownloader<'a> {
                         let (p, result) = future.await;
                         if let Err(e) = result {
                             warn!("Could not create symbolic link: {e}. Copying file instead.");
-                            fs::copy(original_path, p)
-                                .await
-                                .expect("Could not copy file");
+                            fs::copy(path, p).await.expect("Could not copy file");
                         }
                     }),
             )
@@ -582,7 +517,7 @@ impl<'a> AssetDownloader<'a> {
         &mut self,
         case: &mut Case,
         site_data: &mut SiteData,
-    ) -> Result<Vec<Result<AssetDownload>>> {
+    ) -> Result<Drain<'_, AssetDownload>> {
         self.collector.target_case_title = Some(case.case_information.title.clone());
         let paths = &site_data.site_paths;
         let used_sprites = case.get_used_sprites();
@@ -613,7 +548,7 @@ impl<'a> AssetDownloader<'a> {
 
         self.collect_psyche_locks(data, site_data).await;
 
-        Ok(self.collector.get_unique_downloads())
+        Ok(self.collector.collected.drain())
     }
 
     /// Collects the profile assets used in the case.
@@ -637,18 +572,16 @@ impl<'a> AssetDownloader<'a> {
                 {
                     continue;
                 }
-                self.collector.collect_download_with_name(
-                    &mut Value::String(format!("{i}.gif")),
-                    &PathBuf::from("assets")
-                        .join(format!("{base}_{i}_{kind}"))
-                        .with_extension("gif"),
+                self.collector.collect_download(
+                    &Value::String(format!("{i}.gif")),
                     Some(site_data.site_paths.sprite_path(kind, base)),
                     Some(false),
-                    false,
+                    Some("gif"),
                     JsonReference::new(
                         JsonSource::DefaultSprites((*base).to_string(), *i, kind.to_string()),
                         String::new(),
                     ),
+                    false,
                 );
             }
         }
@@ -671,11 +604,12 @@ impl<'a> AssetDownloader<'a> {
                 });
             }
             self.collector.collect_download(
-                &mut profile["icon"],
+                &profile["icon"],
                 None,
                 Some(true),
                 Some("png"),
                 JsonReference::for_case(case_id, format!("/profiles/{i}/icon")),
+                false,
             );
 
             // Profiles may also contain custom sprites.
@@ -691,7 +625,7 @@ impl<'a> AssetDownloader<'a> {
                         continue;
                     }
                     self.collector.collect_download(
-                        &mut custom[kind],
+                        &custom[kind],
                         None,
                         Some(true),
                         Some("gif"),
@@ -699,6 +633,7 @@ impl<'a> AssetDownloader<'a> {
                             case_id,
                             format!("/profiles/{i}/custom_sprites/{j}/{kind}"),
                         ),
+                        false,
                     );
                 }
             }
@@ -724,11 +659,12 @@ impl<'a> AssetDownloader<'a> {
             // 1.) Icons.
             let external = evidence["icon_external"].as_bool();
             self.collector.collect_download(
-                &mut evidence["icon"],
+                &evidence["icon"],
                 Some(paths.evidence_path()),
                 external,
                 Some("png"),
                 JsonReference::for_case(case_id, format!("/evidence/{i}/icon")),
+                false,
             );
             evidence["icon_external"] = Value::Bool(true);
 
@@ -744,7 +680,7 @@ impl<'a> AssetDownloader<'a> {
                 .filter(|x| x.1["type"].as_str().unwrap_or("text") != "text")
             {
                 self.collector.collect_download(
-                    &mut check_data["content"],
+                    &check_data["content"],
                     None,
                     None,
                     None,
@@ -752,6 +688,7 @@ impl<'a> AssetDownloader<'a> {
                         case_id,
                         format!("/evidence/{i}/check_button_data/{j}/content"),
                     ),
+                    false,
                 );
             }
         }
@@ -786,7 +723,6 @@ impl<'a> AssetDownloader<'a> {
     ) -> Result<()> {
         for (i, place) in places.filter_map(|x| x.1.as_object_mut().map(|o| (x.0, o))) {
             // Download place background itself.
-            trace!("{place:?}");
             if let Some(background) = place["background"].as_object_mut() {
                 // This may just be a color instead of an actual image.
                 // (In the case of default places).
@@ -796,11 +732,12 @@ impl<'a> AssetDownloader<'a> {
                         .or_else(|| background["external"].as_i64().map(|x| x == 1))
                         .context("external must be bool")?;
                     self.collector.collect_download(
-                        &mut background["image"],
+                        &background["image"],
                         Some(paths.bg_path()),
                         Some(external),
                         Some("jpg"),
                         ref_base.concat_path(&format!("{i}/background/image")),
+                        false,
                     );
                     background["external"] = Value::Bool(true);
                 }
@@ -844,11 +781,12 @@ impl<'a> AssetDownloader<'a> {
                 continue;
             }
             self.collector.collect_download(
-                &mut object["image"],
+                &object["image"],
                 None,
                 Some(true),
                 None,
                 ref_base.concat_path(&format!("{i}/image")),
+                false,
             );
         }
         Ok(())
@@ -872,11 +810,12 @@ impl<'a> AssetDownloader<'a> {
                 .as_bool()
                 .context("External must be bool!")?;
             self.collector.collect_download(
-                &mut popup["path"],
+                &popup["path"],
                 Some(paths.popup_path()),
                 Some(external),
                 Some("gif"),
                 JsonReference::for_case(case_id, format!("/popups/{i}/path")),
+                false,
             );
             popup["external"] = Value::Bool(true);
         }
@@ -890,7 +829,7 @@ impl<'a> AssetDownloader<'a> {
         for i in 1..=3 {
             for ext in VOICE_EXT {
                 self.collector.collect_download(
-                    &mut Value::String(format!("voice_singleblip_{i}.{ext}")),
+                    &Value::String(format!("voice_singleblip_{i}.{ext}")),
                     Some(paths.voice_path()),
                     Some(false),
                     None,
@@ -898,6 +837,7 @@ impl<'a> AssetDownloader<'a> {
                         JsonSource::DefaultVoices(i, ext.to_string()),
                         String::new(),
                     ),
+                    false,
                 );
             }
         }
@@ -957,11 +897,12 @@ impl<'a> AssetDownloader<'a> {
                 .as_bool()
                 .context("External must be bool!")?;
             self.collector.collect_download(
-                &mut music["path"],
+                &music["path"],
                 Some(paths.music_path()),
                 Some(external),
                 Some("mp3"),
                 JsonReference::for_case(case_id, format!("/music/{i}/path")),
+                false,
             );
             music["external"] = Value::Bool(true);
         }
@@ -986,11 +927,12 @@ impl<'a> AssetDownloader<'a> {
                 .as_bool()
                 .context("External must be bool!")?;
             self.collector.collect_download(
-                &mut sound["path"],
+                &sound["path"],
                 Some(paths.sound_path()),
                 Some(external),
                 Some("mp3"),
                 JsonReference::for_case(case_id, format!("/sounds/{i}/path")),
+                false,
             );
             sound["external"] = Value::Bool(true);
         }
@@ -1001,25 +943,20 @@ impl<'a> AssetDownloader<'a> {
     pub(crate) async fn download_collected(
         &mut self,
         pb: &ProgressBar,
-        downloads: Vec<Result<AssetDownload>>,
+        downloads: Vec<AssetDownload>,
         cases: &mut [Case],
         site_data: &mut SiteData,
     ) -> Result<()> {
         pb.inc_length(downloads.len() as u64);
-        let (successes, failures): (Vec<_>, Vec<_>) = downloads.into_iter().partition_result();
-        for err in failures {
-            AssetDownload::handle_error_for(None, &err, None, &self.ctx.args);
-        }
-        let successes = self.download_assets(successes, pb).await;
+        let successes = self.download_assets(downloads, pb).await;
 
-        if self.ctx.args.one_html_file {
-            // We now need to write back the data URLs into the JSON.
-            let mut case_map: HashMap<u32, &mut Case> =
-                cases.iter_mut().map(|x| (x.id(), x)).collect();
-            for asset in successes {
-                Self::rewrite_data(&asset, &mut case_map, site_data);
-            }
+        //if self.ctx.args.one_html_file {
+        // We now need to write back the data URLs into the JSON.
+        let mut case_map: HashMap<u32, &mut Case> = cases.iter_mut().map(|x| (x.id(), x)).collect();
+        for asset in successes {
+            Self::rewrite_data(&asset, &mut case_map, site_data);
         }
+        //}
         Ok(())
     }
 
@@ -1028,51 +965,56 @@ impl<'a> AssetDownloader<'a> {
         case_map: &mut HashMap<u32, &mut Case>,
         site_data: &mut SiteData,
     ) {
-        let data_url = data_asset
-            .data_url
-            .clone()
-            .expect("Data URL must be present");
-        match &data_asset.json_ref.source {
-            JsonSource::CaseData(id) => {
-                let data = &mut case_map
-                    .get_mut(id)
-                    .expect("case with ID must be present")
-                    .case_data;
-                // Modify pointee to value with data URL.
-                *data
-                    .pointer_mut(&data_asset.json_ref.pointer)
-                    .expect("pointer must be valid") = Value::String(data_url);
-            }
-            JsonSource::DefaultPlaces => {
-                // We skip the root part of the string (i.e., "/{id}/rest...") that would be empty.
-                let mut pointer_parts = data_asset.json_ref.pointer.splitn(3, '/').skip(1);
-                let id = pointer_parts.next().unwrap();
-                let pointer = format!("/{}", pointer_parts.next().unwrap());
-                *site_data
-                    .default_data
-                    .default_places
-                    .get_mut(&id.parse().expect("invalid ID encountered"))
-                    .expect("default place ID must be valid")
-                    .pointer_mut(&pointer)
-                    .expect("pointer must be valid") = Value::String(data_url);
-            }
-            JsonSource::DefaultVoices(id, ext) => {
-                site_data
-                    .default_data
-                    .default_voice_urls
-                    .insert((*id, ext.clone()), data_url);
-            }
-            JsonSource::DefaultSprites(base, sprite_id, kind) => {
-                site_data
-                    .default_data
-                    .default_sprite_urls
-                    .insert((base.clone(), *sprite_id, kind.clone()), data_url);
-            }
-            JsonSource::PsycheLock(name) => {
-                site_data
-                    .default_data
-                    .psyche_lock_urls
-                    .insert(name.clone(), data_url);
+        let path = data_asset
+            .path
+            .get()
+            .expect("path must be set here")
+            .clone();
+        for json_ref in &data_asset.json_refs {
+            let path = path.clone();
+            trace!("Rewriting {json_ref:?} to {path}");
+            match &json_ref.source {
+                JsonSource::CaseData(id) => {
+                    let data = &mut case_map
+                        .get_mut(id)
+                        .expect("case with ID must be present")
+                        .case_data;
+                    // Modify pointee to value with data URL.
+                    *data
+                        .pointer_mut(&json_ref.pointer)
+                        .expect("pointer must be valid") = Value::String(path);
+                }
+                JsonSource::DefaultPlaces => {
+                    // We skip the root part of the string (i.e., "/{id}/rest...") that would be empty.
+                    let mut pointer_parts = json_ref.pointer.splitn(3, '/').skip(1);
+                    let id = pointer_parts.next().unwrap();
+                    let pointer = format!("/{}", pointer_parts.next().unwrap());
+                    *site_data
+                        .default_data
+                        .default_places
+                        .get_mut(&id.parse().expect("invalid ID encountered"))
+                        .expect("default place ID must be valid")
+                        .pointer_mut(&pointer)
+                        .expect("pointer must be valid") = Value::String(path);
+                }
+                JsonSource::DefaultVoices(id, ext) => {
+                    site_data
+                        .default_data
+                        .default_voice_urls
+                        .insert((*id, ext.clone()), path);
+                }
+                JsonSource::DefaultSprites(base, sprite_id, kind) => {
+                    site_data
+                        .default_data
+                        .default_sprite_urls
+                        .insert((base.clone(), *sprite_id, kind.clone()), path);
+                }
+                JsonSource::PsycheLock(name) => {
+                    site_data
+                        .default_data
+                        .psyche_lock_urls
+                        .insert(name.clone(), path);
+                }
             }
         }
     }

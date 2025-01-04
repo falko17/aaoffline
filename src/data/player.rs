@@ -393,7 +393,6 @@ impl Player {
         .context("AAO player code seems to be inaccessible.")?
         .text()
         .await?;
-        trace!("Player: {player}");
 
         player.insert(0, '\n');
         self.content = Some(player);
@@ -653,10 +652,10 @@ impl Player {
         // getVoiceUrl function to point to our local files.
         if let Some(voice) = re::VOICE_REGEX.captures(scripts) {
             let group = voice.get(1).unwrap();
-            let output = if self.scripts.ctx.args.one_html_file {
-                // We actually need to use the data URLs we collected earlier.
+            let output = {
+                // We actually need to use the paths/data URLs we collected earlier
                 // Unfortunately, the voice blips are retrieved dynamically, so we need to write
-                // some JavaScript here to statically return one of our data URLs:
+                // some JavaScript here to statically return one of our URLs:
                 let mut voice_js = String::new();
                 for ((id, ext), url) in &self.site_data.default_data.default_voice_urls {
                     voice_js +=
@@ -665,8 +664,6 @@ impl Player {
                 // Just return an empty audio URL otherwise.
                 voice_js += "return 'data:audio/wav;base64,'";
                 voice_js
-            } else {
-                String::from("return 'assets/voice_singleblip_' + (-voice_id) + '.' + ext;")
             };
             replacements.push(PlayerTransformation::new(
                 TransformationTarget::Scripts,
@@ -680,8 +677,8 @@ impl Player {
         // We need to do the same for the default sprites.
         if let Some(default_sprites) = re::DEFAULT_SPRITES_REGEX.captures(scripts) {
             let group = default_sprites.get(1).unwrap();
-            let output = if self.scripts.ctx.args.one_html_file {
-                // We actually need to use the data URLs we collected earlier.
+            let output = {
+                // We actually need to use the paths/data URLs we collected earlier.
                 // Similar to the voice blips, we need to write some JavaScript here to handle this.
                 let mut sprite_js = String::new();
                 for ((base, sprite_id, status), url) in
@@ -692,8 +689,6 @@ impl Player {
                 }
                 sprite_js += "return 'data:image/gif;base64,'";
                 sprite_js
-            } else {
-                String::from("return 'assets/' + base + '_' + sprite_id + '_' + status + '.gif';")
             };
             replacements.push(PlayerTransformation::new(
                 TransformationTarget::Scripts,
@@ -726,7 +721,7 @@ impl Player {
                 // Note that this isn't the pure ID, but rather something like `+ id`.
                 let lock_id = lock.name("id").unwrap().as_str();
                 let replacement = if self.scripts.ctx.args.one_html_file {
-                    // Once again, we need to insert our data URLs here.
+                    // We need to insert our data URLs here.
                     // However, we have a conundrum related to the problem mentioned in the
                     // paragraph above: We cannot copy any files around and give them different
                     // names, as there *are no* files. We need some way to make the data URLs
@@ -742,6 +737,8 @@ impl Player {
                         String::new()
                     }
                 } else {
+                    // This is the only asset whose file name we know for sure (since we need to
+                    // create symlinks too), refer to `collect_psyche_locks_file`.
                     format!("'assets/{name}_'{lock_id} + '.gif'",)
                 };
                 replacements.push(PlayerTransformation::new(target, path.range(), replacement));
@@ -771,9 +768,9 @@ impl Player {
                 // The path needs to be relative to each case (so that downloaded cases can be moved).
                 let mut target_path = path
                     .strip_prefix(&self.scripts.ctx.output)?
-                    .to_str()
-                    .expect("invalid path encountered")
-                    .to_string();
+                    .components()
+                    .map(|x| x.as_os_str().to_str().expect("invalid path"))
+                    .join("/");
                 if !self.scripts.ctx.args.one_html_file {
                     // We need to go up one directory first.
                     target_path = format!("../{target_path}");

@@ -477,7 +477,7 @@ impl MainContext {
         // and we may collect downloads more than once (for multiple cases), in which case we'd
         // try to download the modified paths, which we don't want.
         let original_default_places = site_data.default_data.default_places.clone();
-        let mut downloads: Vec<Result<_>> = vec![];
+        let mut downloads: Vec<_> = vec![];
         for case in cases.iter_mut() {
             site_data
                 .default_data
@@ -494,7 +494,7 @@ impl MainContext {
                 fs::create_dir_all(output.join("assets")).await?;
             }
             handler.set_output(output);
-            downloads.append(&mut handler.collect_case_data(case, site_data).await?);
+            downloads.append(&mut handler.collect_case_data(case, site_data).await?.collect());
         }
         // Then, download all assets at once.
         let result = handler
