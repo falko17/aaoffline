@@ -581,7 +581,7 @@ async fn main() -> Result<()> {
         && one_file
         && output
             .extension()
-            .is_none_or(|x| x.to_ascii_lowercase() != "html")
+            .is_none_or(|x| !x.eq_ignore_ascii_case("html"))
     {
         if output.is_dir() {
             *output = output.join(cases.first().unwrap().filename());
