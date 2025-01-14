@@ -96,6 +96,9 @@ pub(crate) mod re {
 
     pub(crate) static REMOVE_QUERY_PARAMETERS_REGEX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"\?.*").unwrap());
+
+    pub(crate) static CONTENT_DISPOSITION_FILENAME_REGEX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"filename="([^"]*?)""#).unwrap());
 }
 
 pub(crate) const AAONLINE_BASE: &str = "https://aaonline.fr";
