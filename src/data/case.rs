@@ -145,13 +145,13 @@ impl Case {
     ) -> Result<Case> {
         let case_script = client.get(format!(
         "{AAONLINE_BASE}/trial.js.php?trial_id={case_id}",
-    )).send().await
-    .context(
-        formatcp!("Could not download case data from {AAONLINE_BASE}. Please check your internet connection.")
-    )?
-    .error_for_status()
-    .context("Case data seems to be inaccessible.")?
-    .text().await?;
+        )).send().await
+        .context(
+            formatcp!("Could not download case data from {AAONLINE_BASE}. Please check your internet connection.")
+        )?
+        .error_for_status()
+        .context("Case data seems to be inaccessible.")?
+        .text().await?;
 
         let case_information =
             super::retrieve_escaped_json(&re::TRIAL_INFORMATION_REGEX, &case_script).map_err(
