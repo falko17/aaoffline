@@ -30,7 +30,7 @@ use crate::constants::re::{CONTENT_DISPOSITION_FILENAME_REGEX, REMOVE_QUERY_PARA
 use crate::constants::AAONLINE_BASE;
 use crate::data::case::Case;
 use crate::data::site::{SiteData, SitePaths};
-use crate::{GlobalContext, HttpHandling};
+use crate::{args::HttpHandling, GlobalContext};
 
 /// Downloaded content.
 pub(crate) struct Download {
