@@ -66,11 +66,11 @@ impl Download {
             format!("{AAONLINE_BASE}/{}", url.trim_start_matches('/'))
         };
 
-        // Then, download the file as bytes (since it may be binary).
+        // Actually download the file.
         let content = client.get(&target).send().await.with_context(|| {
             format!("Could not download file from {target}. Please check your internet connection.")
         })?;
-        // NOTE: We need to use the final URL for the output since the extension may differ.
+        // NOTE: We need to use the final URL for the output path since the extension may differ.
         let target_url = content.url().clone();
         let content = content.error_for_status()?;
         let headers = content.headers().clone();

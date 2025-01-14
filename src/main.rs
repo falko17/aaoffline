@@ -15,7 +15,7 @@ use constants::re;
 use data::case::{Case, Sequence};
 use data::player::Player;
 use download::AssetDownloader;
-use futures::{future, TryFutureExt};
+use futures::{StreamExt, TryFutureExt};
 use human_panic::setup_panic;
 use indicatif::{MultiProgress, ProgressBar};
 use itertools::Itertools;
@@ -110,7 +110,7 @@ struct Args {
     ///
     /// Note that this is in addition to the first try, so a value of one will lead to two download
     /// attempts if the first one failed.
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 3)]
     retries: u32,
 
     /// Whether to download all trials contained in a sequence (if the given case is part of a
@@ -271,9 +271,15 @@ impl MainContext {
 
     /// Shows the current step with the given [text] and [step] number in the progress bar.
     fn show_step(&self, step: u8, text: &str) {
+        self.show_step_ctx(step, text, self.ctx());
+    }
+
+    /// Shows the current step with the given [text] and [step] number in the progress bar,
+    /// using the given [ctx] for the arguments.
+    fn show_step_ctx(&self, step: u8, text: &str, ctx: &GlobalContext) {
         self.pb
             .set_message(format!("{} {text}", format!("[{step}/7]").dimmed()));
-        if !Self::should_hide_pb(&self.ctx().args) {
+        if !Self::should_hide_pb(&ctx.args) {
             self.pb.enable_steady_tick(Duration::from_millis(50));
         }
     }
@@ -365,23 +371,32 @@ impl MainContext {
 
     /// Retrieves the case information for all cases and possibly their sequences.
     async fn retrieve_case_infos(&mut self) -> Result<HashSet<Case>> {
+        let pb = self.add_progress(self.case_ids.len() as u64);
+        pb.inc(0);
         // We temporarily move the context out of here to use its client freely.
         let ctx = self.global_ctx.take().expect("context must exist here");
         let client = &ctx.client;
+        let concurrent = ctx.args.concurrent_downloads;
+
         let mut cases: HashSet<_> =
-            Self::download_case_infos_no_sequence(&self.case_ids, client).await?;
+            Self::download_case_infos_no_sequence(&self.case_ids, client, concurrent, &pb).await?;
+
+        let additional = &cases
+            .iter()
+            .flat_map(|case| self.additional_cases(case, &ctx))
+            .collect::<Vec<u32>>();
+        pb.inc_length(additional.len() as u64);
+        self.show_step_ctx(
+            1,
+            "Retrieving case information for additional sequence cases...",
+            &ctx,
+        );
         cases.extend(
-            Self::download_case_infos_no_sequence(
-                &cases
-                    .iter()
-                    .flat_map(|case| self.additional_cases(case, &ctx))
-                    .collect::<Vec<u32>>(),
-                client,
-            )
-            .await?,
+            Self::download_case_infos_no_sequence(additional, client, concurrent, &pb).await?,
         );
         // And then we put it back.
         self.global_ctx = Some(ctx);
+        self.finish_progress(&pb, "All case information retrieved.");
         Ok(cases)
     }
 
@@ -389,8 +404,13 @@ impl MainContext {
     async fn download_case_infos_no_sequence(
         ids: &[u32],
         client: &ClientWithMiddleware,
+        concurrent_conns: usize,
+        pb: &ProgressBar,
     ) -> Result<HashSet<Case>> {
-        future::join_all(ids.iter().map(|x| Case::retrieve_from_id(*x, client)))
+        futures::stream::iter(ids.iter().map(|x| Case::retrieve_from_id(*x, client)))
+            .buffer_unordered(concurrent_conns)
+            .inspect(|_| pb.inc(1))
+            .collect::<Vec<_>>()
             .await
             .into_iter()
             .collect()
@@ -647,9 +667,14 @@ async fn main() -> Result<()> {
 
     ctx.pb.finish_and_clear();
     info!(
-        "Case{} identified as: {}",
+        "Case{} identified as:{}{}",
         if one_case { "" } else { "s" },
-        cases.iter().map(ToString::to_string).join(", ")
+        if one_case { ' ' } else { '\n' },
+        cases
+            .iter()
+            .map(ToString::to_string)
+            .map(|x| format!("• {x}"))
+            .join("\n")
     );
     ctx.pb = ctx
         .multi_progress
