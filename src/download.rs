@@ -10,6 +10,7 @@ use indicatif::ProgressBar;
 use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use regex::Regex;
+use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
 use sanitize_filename::sanitize;
@@ -21,54 +22,120 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::iter;
 use std::path::{Path, PathBuf};
+use std::string::FromUtf8Error;
 use tokio::fs::{self};
 use tokio::io;
 
-use crate::constants::re::REMOVE_QUERY_PARAMETERS_REGEX;
+use crate::constants::re::{CONTENT_DISPOSITION_FILENAME_REGEX, REMOVE_QUERY_PARAMETERS_REGEX};
 use crate::constants::AAONLINE_BASE;
 use crate::data::case::Case;
 use crate::data::site::{SiteData, SitePaths};
 use crate::{GlobalContext, HttpHandling};
 
-/// Downloads a file from the given [url] and returns the output path and file content.
-pub(crate) async fn download_url(
-    url: &str,
-    http_handling: &HttpHandling,
-    client: &ClientWithMiddleware,
-) -> Result<(Url, Bytes)> {
-    debug!("Downloading {url}...");
-    let target = if url.starts_with("http://") {
-        match http_handling {
-            HttpHandling::AllowInsecure => url.to_string(),
-            HttpHandling::RedirectToHttps => url.replacen("http://", "https://", 1),
-            HttpHandling::Disallow => {
-                return Err(anyhow!("Blocking insecure HTTP request to {url}."))
-            }
-        }
-    } else if url.starts_with("https://") {
-        url.to_string()
-    } else {
-        // Assume this is a relative URL.
-        format!("{AAONLINE_BASE}/{}", url.trim_start_matches('/'))
-    };
-
-    // Then, download the file as bytes (since it may be binary).
-    let content = client.get(&target).send().await.with_context(|| {
-        format!("Could not download file from {target}. Please check your internet connection.")
-    })?;
-    // NOTE: We need to use the final URL for the output since the extension may differ.
-    let name = content.url().clone();
-    let content = content.error_for_status()?.bytes().await?;
-    Ok((name, content))
+/// Downloaded content.
+pub(crate) struct Download {
+    /// The target URL (i.e., after all redirections) from which the content was downloaded.
+    pub(crate) target_url: Url,
+    /// The content that was downloaded.
+    pub(crate) content: Bytes,
+    /// The response headers.
+    pub(crate) headers: HeaderMap<HeaderValue>,
 }
 
-/// Converts the given [data] to a base64 data URL.
-pub(crate) fn make_data_url(data: &Bytes) -> String {
-    let mime = infer::get(data)
-        // Most browsers seem to handle "wrong" MIME types correctly in data URLs, anyway,
-        // so this doesn't really matter. Maybe I should get rid of `infer` altogether.
-        .map_or("application/octet-stream", |x| x.mime_type());
-    format!("data:{mime};base64,{}", BASE64_STANDARD.encode(data))
+impl Download {
+    /// Downloads a file from the given [url] and returns the output path and file content.
+    pub(crate) async fn retrieve_url(
+        url: &str,
+        http_handling: &HttpHandling,
+        client: &ClientWithMiddleware,
+    ) -> Result<Download> {
+        // TODO: Proper timeout for download (test with long sequence)
+        debug!("Downloading {url}...");
+        let target = if url.starts_with("http://") {
+            match http_handling {
+                HttpHandling::AllowInsecure => url.to_string(),
+                HttpHandling::RedirectToHttps => url.replacen("http://", "https://", 1),
+                HttpHandling::Disallow => {
+                    return Err(anyhow!("Blocking insecure HTTP request to {url}."))
+                }
+            }
+        } else if url.starts_with("https://") {
+            url.to_string()
+        } else {
+            // Assume this is a relative URL.
+            format!("{AAONLINE_BASE}/{}", url.trim_start_matches('/'))
+        };
+
+        // Then, download the file as bytes (since it may be binary).
+        let content = client.get(&target).send().await.with_context(|| {
+            format!("Could not download file from {target}. Please check your internet connection.")
+        })?;
+        // NOTE: We need to use the final URL for the output since the extension may differ.
+        let target_url = content.url().clone();
+        let content = content.error_for_status()?;
+        let headers = content.headers().clone();
+        Ok(Self {
+            target_url,
+            content: content.bytes().await?,
+            headers,
+        })
+    }
+
+    /// Returns the content of this [Download] as a UTF-8 encoded String.
+    pub(crate) fn content_str(&self) -> Result<String, FromUtf8Error> {
+        String::from_utf8(self.content.to_vec())
+    }
+
+    /// Returns the content type of this [Download], as defined by the Content-Type header.
+    pub(crate) fn content_type(&self) -> Option<&str> {
+        self.headers
+            .get("Content-Type")
+            .and_then(|x| x.to_str().ok())
+            .map(|x| x.split_once(';').map_or(x, |y| y.0))
+    }
+
+    /// Converts this [Download] to a base64 data URL.
+    pub(crate) fn make_data_url(&self) -> String {
+        let mime = self
+            .content_type()
+            .or_else(|| infer::get(&self.content).map(|x| x.mime_type()))
+            .unwrap_or("application/octet-stream");
+        format!(
+            "data:{mime};base64,{}",
+            BASE64_STANDARD.encode(&self.content)
+        )
+    }
+
+    /// Returns the filename under which this download should be saved.
+    ///
+    /// This will first check if an explicit filename has been set in the Content-Disposition
+    /// header, and will otherwise use the final path segment of the URL.
+    pub(crate) fn filename(&self) -> String {
+        if let Some(disposition) = self
+            .headers
+            .get("Content-Disposition")
+            .and_then(|x| x.to_str().ok())
+            .and_then(|x| CONTENT_DISPOSITION_FILENAME_REGEX.captures(x))
+            .and_then(|x| x.get(1))
+        {
+            // If a filename is explicitly set using the Content-Disposition header, we'll use it.
+            disposition.as_str().to_string()
+        } else {
+            // We'll assign a path based on the URL's ending.
+            let name = self
+                .target_url
+                .path_segments()
+                .and_then(Iterator::last)
+                .unwrap_or(self.target_url.path());
+            // Remove any query parameters.
+            let path = PathBuf::from(REMOVE_QUERY_PARAMETERS_REGEX.replace(name, "").to_string());
+            path.file_name()
+                .unwrap_or(path.as_os_str())
+                .to_str()
+                .expect("invalid filename encountered")
+                .to_string()
+        }
+    }
 }
 
 /// Hashes the given [value] to a u64.
@@ -200,9 +267,13 @@ impl AssetCollector {
     /// The [url] will be used for hashing only, to ensure a unique output name,
     /// while the [path]'s filename will be used for the output path's filename.
     fn new_path(output: &Path, url: &str, path: &Path) -> PathBuf {
-        let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("bin");
-        // Remove any query parameters.
-        let ext = REMOVE_QUERY_PARAMETERS_REGEX.replace(ext, "").to_string();
+        let ext = if let Some(ext) = path.extension().and_then(|x| x.to_str()) {
+            ext
+        } else {
+            const DEFAULT_EXT: &str = "bin";
+            warn!("Unknown extension for {url}! Setting to '.{DEFAULT_EXT}'.",);
+            DEFAULT_EXT
+        };
         let name = path
             .file_stem()
             .unwrap_or(path.as_os_str())
@@ -216,7 +287,7 @@ impl AssetCollector {
         let path = output
             .join("assets")
             .join(sanitize(format!("{name}-{}", hash(url))).to_lowercase())
-            .with_extension(&ext);
+            .with_extension(ext);
         assert!(
             path.parent()
                 .expect("parent dir must exist")
@@ -398,26 +469,25 @@ impl<'a> AssetDownloader<'a> {
 
     /// Downloads the given [asset] and writes it to its set path.
     async fn download_asset(&self, asset: &mut AssetDownload) -> Result<()> {
-        let (url, content) =
-            download_url(&asset.url, &self.ctx.args.http_handling, &self.ctx.client).await?;
+        let download =
+            Download::retrieve_url(&asset.url, &self.ctx.args.http_handling, &self.ctx.client)
+                .await?;
         if self.ctx.args.one_html_file {
             // No need to write data anywhere but in the data URL.
             asset
                 .path
-                .set(make_data_url(&content))
+                .set(download.make_data_url())
                 .expect("path must not be set already");
         } else if let Some(path) = asset.path.get() {
             // We need to reuse the existing path here.
-            Self::write_asset(&PathBuf::from(path), &content).await?;
+            Self::write_asset(&PathBuf::from(path), &download.content).await?;
         } else {
-            // We'll assign a path based on the URL's ending.
-            let new_name = url
-                .path_segments()
-                .and_then(Iterator::last)
-                .unwrap_or(url.path());
-            let path =
-                AssetCollector::new_path(&asset.output_path, url.as_str(), Path::new(new_name));
-            Self::write_asset(&path, &content).await?;
+            let path = AssetCollector::new_path(
+                &asset.output_path,
+                download.target_url.as_str(),
+                Path::new(&download.filename()),
+            );
+            Self::write_asset(&path, &download.content).await?;
             asset
                 .path
                 .set(

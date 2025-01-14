@@ -1,7 +1,7 @@
 //! Contains data model related to the case player and its scripts.
 
 use crate::constants::{re, AAONLINE_BASE, BITBUCKET_URL};
-use crate::download::{download_url, make_data_url};
+use crate::download::Download;
 use crate::transform::php;
 use crate::GlobalContext;
 use anyhow::{Context, Result};
@@ -287,7 +287,7 @@ impl PlayerScripts {
     ) -> Result<()> {
         pb.inc_length(37);
         let config = serde_json::to_string(&site_data.site_paths)?;
-        let common_js = download_url(
+        let common_js = Download::retrieve_url(
             format!(
                 "{BITBUCKET_URL}/{}/Javascript/common.js",
                 self.ctx.args.player_version
@@ -313,7 +313,7 @@ window.addEventListener('load', function() {{
     // Execute all init functions in order.
     initScripts.forEach((x) => x());
 }}, false);\n",
-            String::from_utf8(common_js.1.to_vec())?,
+            common_js.content_str()?,
             self.retrieve_js_modules(site_data, Some(pb), transform_module)
                 .await?
         ));
@@ -467,7 +467,7 @@ impl Player {
         for (target, css) in css_caps {
             let whole = css.get(0).unwrap();
             let group = css.get(1).unwrap();
-            let result = download_url(
+            let result = Download::retrieve_url(
                 group.as_str(),
                 &self.scripts.ctx.args.http_handling,
                 &self.scripts.ctx.client,
@@ -475,11 +475,11 @@ impl Player {
             .await;
             pb.inc(1);
 
-            if let Ok((_, content)) = result {
+            if let Ok(download) = result {
                 replacements.push(PlayerTransformation::new(
                     target,
                     whole.range(),
-                    format!("<style>{}</style>", String::from_utf8(content.to_vec())?),
+                    format!("<style>{}</style>", download.content_str()?),
                 ));
             } else if let Err(e) = result {
                 warn!("Could not download CSS file, skipping: {e}");
@@ -490,14 +490,14 @@ impl Player {
         for (target, include) in style_caps {
             let whole = include.get(0).unwrap();
             let group = include.get(1).unwrap();
-            let result = download_url(
+            let result = Download::retrieve_url(
                 &format!("CSS/{}.css", group.as_str()),
                 &self.scripts.ctx.args.http_handling,
                 &self.scripts.ctx.client,
             )
             .await;
             pb.inc(1);
-            if let Ok((_, content)) = result {
+            if let Ok(download) = result {
                 replacements.push(PlayerTransformation::new(
                     target,
                     whole.range(),
@@ -508,7 +508,7 @@ impl Player {
                 replacements.push(PlayerTransformation::new(
                     TransformationTarget::Player,
                     head_position..head_position,
-                    format!("\n<style>{}</style>", String::from_utf8(content.to_vec())?),
+                    format!("\n<style>{}</style>", download.content_str()?),
                 ));
             } else if let Err(e) = result {
                 warn!("Could not download CSS file, skipping: {e}");
@@ -535,8 +535,8 @@ impl Player {
         let mut lang_json = Value::Null;
         pb.inc_length(lang_files.len() as u64);
         for lang_file in lang_files {
-            let (_, content) = download_url(&format!("{lang_dir}/{config_lang}/{lang_file}.js"), &self.scripts.ctx.args.http_handling, &self.scripts.ctx.client).await
-                .context(format!("Could not download language files for {lang_file}. Please make sure the given language {} exists.", self.scripts.ctx.args.language))?;
+            let content = Download::retrieve_url(&format!("{lang_dir}/{config_lang}/{lang_file}.js"), &self.scripts.ctx.args.http_handling, &self.scripts.ctx.client).await
+                .context(format!("Could not download language files for {lang_file}. Please make sure the given language {} exists.", self.scripts.ctx.args.language))?.content;
             pb.inc(1);
             let lang = serde_json::from_slice::<Value>(&content)?;
             merge(&mut lang_json, lang);
@@ -582,17 +582,17 @@ impl Player {
                 // No need to do anything about data URLs.
                 continue;
             }
-            let result = download_url(
+            let result = Download::retrieve_url(
                 group.as_str(),
                 &self.scripts.ctx.args.http_handling,
                 &self.scripts.ctx.client,
             )
             .await;
-            if let Ok((_, content)) = result {
+            if let Ok(download) = result {
                 replacements.push(PlayerTransformation::new(
                     target,
                     group.range(),
-                    make_data_url(&content),
+                    download.make_data_url(),
                 ));
             } else if let Err(e) = result {
                 warn!("Could not download asset, skipping: {e}");
@@ -603,7 +603,7 @@ impl Player {
         // We need howler.js for sound effects.
         if let Some(howler) = re::HOWLER_REGEX.captures(scripts) {
             let configuration = howler.get(1).unwrap().as_str();
-            let result = download_url(
+            let result = Download::retrieve_url(
                 &format!(
                     "{BITBUCKET_URL}/{}/Javascript/howler.js/howler.min.js",
                     self.scripts.ctx.args.player_version
@@ -613,13 +613,9 @@ impl Player {
             )
             .await;
             pb.inc(1);
-            if let Ok((_, content)) = result {
+            if let Ok(download) = result {
                 // We will include Howler directly, as well as its configuration below.
-                let output = format!(
-                    "{}\n{}",
-                    String::from_utf8(content.to_vec())?,
-                    configuration
-                );
+                let output = format!("{}\n{}", download.content_str()?, configuration);
                 replacements.push(PlayerTransformation::new(
                     TransformationTarget::Scripts,
                     howler.get(0).unwrap().range(),
@@ -817,14 +813,14 @@ impl Player {
                 pb.inc(1);
                 continue;
             }
-            let result = download_url(
+            let result = Download::retrieve_url(
                 &format!("CSS/{}", group.as_str()),
                 &self.scripts.ctx.args.http_handling,
                 &self.scripts.ctx.client,
             )
             .await;
-            if let Ok((_, content)) = result {
-                replacements.push((group.range(), make_data_url(&content)));
+            if let Ok(download) = result {
+                replacements.push((group.range(), download.make_data_url()));
             } else if let Err(e) = result {
                 warn!("Could not download CSS dependency, skipping: {e}");
             }
