@@ -1,6 +1,8 @@
+//! Contains middleware for the [reqwest] client.
+
 use reqwest_middleware::RequestInitialiser;
 
-use crate::Args;
+use crate::args::Args;
 
 /// A middleware that modifies outgoing HTTP requests from aaoffline.
 pub(crate) struct AaofflineMiddleware {
