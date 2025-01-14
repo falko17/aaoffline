@@ -104,16 +104,19 @@ impl MainContext {
         let multi_progress = MultiProgress::new();
         let http_handling = args.http_handling.clone();
         let retry_policy = ExponentialBackoff::builder().build_with_max_retries(args.retries);
-        let client = ClientBuilder::new(
-            Client::builder()
-                .user_agent("aaoffline")
-                .https_only(http_handling == args::HttpHandling::Disallow)
-                .build()
-                .expect("client cannot be built"),
-        )
-        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-        .with_init(AaofflineMiddleware::from(&args))
-        .build();
+        let mut builder = Client::builder()
+            .user_agent("aaoffline")
+            .https_only(http_handling == args::HttpHandling::Disallow);
+        if args.connect_timeout > 0 {
+            builder = builder.connect_timeout(Duration::from_secs(args.connect_timeout));
+        }
+        if args.read_timeout > 0 {
+            builder = builder.read_timeout(Duration::from_secs(args.read_timeout));
+        }
+        let client = ClientBuilder::new(builder.build().expect("client cannot be built"))
+            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+            .with_init(AaofflineMiddleware::from(&args))
+            .build();
         MainContext {
             case_ids,
             pb: multi_progress.add(ProgressBar::new_spinner()),
