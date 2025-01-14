@@ -49,17 +49,6 @@ pub(crate) struct Args {
     #[arg(short('r'), long, default_value_t = false)]
     pub(crate) replace_existing: bool,
 
-    /// How many concurrent downloads to use.
-    #[arg(short('j'), long, default_value_t = 5)]
-    pub(crate) concurrent_downloads: usize,
-
-    /// How many times to retry downloads if they fail.
-    ///
-    /// Note that this is in addition to the first try, so a value of one will lead to two download
-    /// attempts if the first one failed.
-    #[arg(long, default_value_t = 3)]
-    pub(crate) retries: u32,
-
     /// Whether to download all trials contained in a sequence (if the given case is part of a
     /// sequence).
     #[arg(short('s'), long, value_enum, default_value_t)]
@@ -71,6 +60,28 @@ pub(crate) struct Args {
     /// multiple dozens of megabytes large. Your mileage may vary.
     #[arg(short('1'), long, default_value_t = false)]
     pub(crate) one_html_file: bool,
+
+    /// How many concurrent downloads to use.
+    #[arg(short('j'), long, default_value_t = 5)]
+    pub(crate) concurrent_downloads: usize,
+
+    /// How many times to retry downloads if they fail.
+    ///
+    /// Note that this is in addition to the first try, so a value of one will lead to two download
+    /// attempts if the first one failed.
+    #[arg(long, default_value_t = 3)]
+    pub(crate) retries: u32,
+
+    /// The maximum time to wait for the connect phase of network requests (in seconds).
+    /// A value of 0 means that no timeout will be applied.
+    #[arg(long, default_value_t = 10)]
+    pub(crate) connect_timeout: u64,
+
+    /// The maximum time to wait for the read (i.e., download) phase of network requests
+    /// (in seconds).
+    /// A value of 0 means that no timeout will be applied.
+    #[arg(long, default_value_t = 30)]
+    pub(crate) read_timeout: u64,
 
     /// How to handle insecure HTTP requests.
     #[arg(long, value_enum, default_value_t)]
@@ -130,7 +141,7 @@ pub(crate) enum DownloadSequence {
 
 impl Args {
     /// Parses the given [case] into its ID.
-    pub(crate) fn accept_case(case: &str) -> Result<u32, String> {
+    fn accept_case(case: &str) -> Result<u32, String> {
         if let Ok(id) = case.parse::<u32>() {
             Ok(id)
         } else if let Some(captures) = re::CASE_REGEX.captures(case) {
