@@ -2,11 +2,12 @@
 
 use anyhow::Result;
 
-use clap::{command, Parser, ValueEnum};
+use clap::{command, error::ErrorKind, CommandFactory, Parser, ValueEnum};
 #[cfg(debug_assertions)]
 use clap_verbosity_flag::DebugLevel;
 #[cfg(not(debug_assertions))]
 use clap_verbosity_flag::InfoLevel;
+use itertools::Itertools;
 use serde::Serialize;
 
 use std::path::PathBuf;
@@ -60,6 +61,21 @@ pub(crate) struct Args {
     /// multiple dozens of megabytes large. Your mileage may vary.
     #[arg(short('1'), long, default_value_t = false)]
     pub(crate) one_html_file: bool,
+
+    /// Whether to apply any userscripts to the downloaded case. Can be passed multiple times.
+    ///
+    /// Scripts were created by Time Axis, with only the expanded keyboard controls written by me,
+    /// building on Time Axis' basic keyboard controls script.
+    /// (These options may change in the future when some scripts are consolidated).
+    #[arg(
+        short('u'),
+        long,
+        num_args(0..=1),
+        default_missing_value("all"),
+        require_equals(true),
+        value_enum,
+    )]
+    pub(crate) with_userscripts: Vec<Userscripts>,
 
     /// How many concurrent downloads to use.
     #[arg(short('j'), long, default_value_t = 5)]
@@ -137,6 +153,65 @@ pub(crate) enum DownloadSequence {
     /// Ask first (if in an interactive terminal, otherwise don't download sequence).
     #[default]
     Ask,
+}
+
+/// Whether to apply any userscripts to the downloaded case.
+#[derive(Debug, ValueEnum, Clone, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Userscripts {
+    /// Apply all userscripts.
+    All,
+
+    /// Changes the fonts of nametags to use a proper pixelized font.
+    AltNametag,
+    /// Adds a backlog button to see past dialog.
+    Backlog,
+    /// Improves the layout (e.g., enlarging and centering the main screens).
+    BetterLayout,
+    /// Adds extensive keyboard controls. See the top of the file at
+    /// <https://gist.github.com/falko17/965207b1f1f0496ff5f0cb41d8e827f2#file-aaokeyboard-user-js>
+    /// to get an overview of available controls.
+    KeyboardControls,
+
+    /// Apply no userscript.
+    #[default]
+    None,
+}
+
+impl Userscripts {
+    /// Returns the URLs pointing to the corresponding userscripts.
+    pub(crate) fn urls(&self) -> Vec<&str> {
+        match self {
+            Self::AltNametag => vec!["https://beyondtimeaxis.github.io/misc/aaoaltnametags.user.js"],
+            Self::Backlog => vec!["https://beyondtimeaxis.github.io/misc/aaobacklog.user.js"],
+            Self::BetterLayout => vec!["https://beyondtimeaxis.github.io/misc/aaobetterlayout.user.js"],
+            Self::KeyboardControls => vec!["https://gist.github.com/falko17/965207b1f1f0496ff5f0cb41d8e827f2/raw/aaokeyboard.user.js"],
+            Self::All => [Self::AltNametag, Self::Backlog, Self::BetterLayout, Self::KeyboardControls].iter().flat_map(Self::urls).collect(),
+            Self::None => vec![]
+        }
+    }
+
+    /// Returns all URLs belonging to the given collection of [scripts].
+    pub(crate) fn all_urls(scripts: &[Self]) -> Vec<&str> {
+        scripts.iter().flat_map(|x| x.urls()).unique().collect()
+    }
+
+    /// Ensures that the given [scripts] are a valid combination.
+    pub(crate) fn validate_combination(scripts: &[Self]) -> Result<(), clap::Error> {
+        if (scripts.contains(&Self::All)) && scripts.len() > 1 {
+            Err(Args::command().error(
+                ErrorKind::ArgumentConflict,
+                "Can't specify any other scripts when including all of them anyway",
+            ))
+        } else if scripts.contains(&Self::None) && scripts.len() > 1 {
+            Err(Args::command().error(
+                ErrorKind::ArgumentConflict,
+                "Can't specify any other scripts when including none",
+            ))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Args {

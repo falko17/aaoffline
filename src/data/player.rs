@@ -1,5 +1,6 @@
 //! Contains data model related to the case player and its scripts.
 
+use crate::args::Userscripts;
 use crate::constants::{re, AAONLINE_BASE, BITBUCKET_URL};
 use crate::download::Download;
 use crate::transform::php;
@@ -403,7 +404,42 @@ impl Player {
     pub(crate) async fn retrieve_scripts(&mut self, pb: &ProgressBar) -> Result<()> {
         self.scripts
             .retrieve_player_scripts(&self.site_data, pb, Self::transform_module)
-            .await?;
+            .await
+    }
+
+    /// Retrieves the userscripts and appends them to the player scripts.
+    pub(crate) async fn retrieve_userscripts(&mut self, pb: &ProgressBar) -> Result<()> {
+        const HTML_END: &str = "</html>";
+        let urls = Userscripts::all_urls(&self.scripts.ctx.args.with_userscripts);
+        let client = &self.scripts.ctx.client;
+        let userscripts = stream::iter(urls)
+            .map(|url| async move {
+                debug!("Downloading userscript {url}...");
+                pb.inc(1);
+                client
+                    .get(url)
+                    .send()
+                    .await
+                    .context("Could not download userscript.")?
+                    .error_for_status()
+                    .context("Userscript seems to be inaccessible.")?
+                    .text()
+                    .await
+                    .context("Script could not be decoded as text")
+            })
+            .buffer_unordered(self.scripts.ctx.args.concurrent_downloads)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .flatten()
+            .join("\n\n");
+        let content = self.content.as_mut().expect("player must be present");
+        let html_end = content
+            .rfind(HTML_END)
+            .expect("end of player must be present");
+        let replacement =
+            format!("<script type=\"text/javascript\">{userscripts}</script>\n{HTML_END}");
+        content.replace_range(html_end..html_end + HTML_END.len(), &replacement);
         Ok(())
     }
 
