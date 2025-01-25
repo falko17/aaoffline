@@ -1,6 +1,7 @@
 use std::{
     error::Error,
     fmt::Display,
+    fs,
     path::PathBuf,
     sync::{Arc, Mutex, Weak},
     time::Duration,
@@ -20,6 +21,7 @@ use headless_chrome::{
     Browser, LaunchOptionsBuilder,
 };
 use itertools::Itertools;
+use maplit::hashmap;
 use rstest::{fixture, rstest};
 use rstest_reuse::{apply, template};
 use tempfile::{tempdir, TempDir};
@@ -178,11 +180,12 @@ fn verify_with_browser_common(
     tab.enable_log()?;
     let listener: Arc<JsListener> = Arc::new(JsListener::default());
     tab.add_event_listener(listener.clone())?;
-    tab.navigate_to(&format!(
+    let url = format!(
         "file://{path}{}.html{}",
         if append_index { "/index" } else { "" },
         query.unwrap_or_default()
-    ))?;
+    );
+    tab.navigate_to(&url)?;
     tab.wait_until_navigated()?;
 
     // We click the "Start" button and wait a little while.
@@ -334,6 +337,80 @@ fn test_multi(mut cmd: Cmd) {
         verify_with_browser(path.as_os_str().to_str().unwrap(), None).unwrap();
     }
     drop(cmd);
+}
+
+#[rstest]
+fn test_userscripts(
+    mut cmd: Cmd,
+    #[values(
+        "",
+        "=all",
+        "=none",
+        "=alt-nametag",
+        "=backlog",
+        "=better-layout",
+        "=keyboard-controls"
+    )]
+    userscripts: &str,
+    #[values(true, false)] one_file: bool,
+) {
+    use regex::Regex;
+
+    cmd.with_tmp_output(one_file);
+    if one_file {
+        cmd.cmd.arg("-1");
+    }
+    cmd.cmd.arg(PSYCHE_LOCK_TEST);
+    cmd.cmd.arg(String::from("-u") + userscripts);
+    println!(
+        "Command-line args: {}",
+        cmd.cmd.get_args().map(|x| x.to_str().unwrap()).join(" ")
+    );
+    cmd.cmd.assert().success();
+    // We want to both make sure that the userscript is actually present...
+    let verify_regexes = hashmap! {
+        "=alt-nametag" => r"// @name\s+AAO Alt Nametag Font",
+        "=backlog" => r"// @name\s+AAO Backlog Script",
+        "=better-layout" => r"// @name\s+AAO Better Layout Script",
+        "=keyboard-controls" => r"// @name\s+AAO Keyboard Controls \(Expanded\)",
+    };
+
+    let path = format!("{}/index.html", cmd.path_as_str(),);
+    let file = fs::read_to_string(path).unwrap();
+    if let Some(regextext) = verify_regexes.get(userscripts) {
+        let regex = Regex::new(regextext).unwrap();
+        assert!(regex.is_match(&file));
+    } else if userscripts == "=all" || userscripts.is_empty() {
+        for r in verify_regexes.values() {
+            let regex = Regex::new(r).unwrap();
+            assert!(regex.is_match(&file));
+        }
+    } else if userscripts == "=none" {
+        assert!(!file.contains("==UserScript=="));
+    } else {
+        panic!("Unknown userscripts setting");
+    }
+    // ...and that there are no errors in the scripts.
+    verify_with_browser(cmd.path_as_str(), None).unwrap();
+}
+
+#[rstest]
+fn test_invalid_userscript(
+    mut cmd: Cmd,
+    #[values(
+        "-u backlog -u all",
+        "-u -u",
+        "-u backlog -u none",
+        "-u none -u all",
+        "-u some"
+    )]
+    userscripts: &str,
+) {
+    cmd.cmd
+        .arg(PSYCHE_LOCK_TEST)
+        .args(userscripts.split(' '))
+        .assert()
+        .failure();
 }
 
 #[rstest]

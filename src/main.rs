@@ -10,6 +10,7 @@ mod middleware;
 pub(crate) mod transform;
 
 use anyhow::{Context, Result};
+use args::Userscripts;
 use clap::Parser;
 use colored::Colorize;
 use data::case::{Case, Sequence};
@@ -140,7 +141,7 @@ impl MainContext {
     /// using the given [ctx] for the arguments.
     fn show_step_ctx(&self, step: u8, text: &str, ctx: &GlobalContext) {
         self.pb
-            .set_message(format!("{} {text}", format!("[{step}/7]").dimmed()));
+            .set_message(format!("{} {text}", format!("[{step}/8]").dimmed()));
         if !Self::should_hide_pb(&ctx.args) {
             self.pb.enable_steady_tick(Duration::from_millis(50));
         }
@@ -389,6 +390,23 @@ impl MainContext {
         self.clean_on_fail(result).await
     }
 
+    /// Retrieves the userscripts and appends them to the player.
+    async fn append_userscripts(&mut self) -> Result<()> {
+        let urls = Userscripts::all_urls(&self.ctx().args.with_userscripts);
+        if urls.is_empty() {
+            return Ok(());
+        }
+        let pb = self.add_progress(urls.len() as u64);
+        let result = self
+            .player
+            .as_mut()
+            .unwrap()
+            .retrieve_userscripts(&pb)
+            .await;
+        self.finish_progress(&pb, "Userscripts retrieved.");
+        self.clean_on_fail(result).await
+    }
+
     /// Transforms the player blocks for the given [case] to point to offline assets.
     async fn transform_player_blocks(&mut self, case: &Case) -> Result<()> {
         let result = self.player.as_mut().unwrap().transform_player(case);
@@ -437,6 +455,7 @@ impl MainContext {
 async fn main() -> Result<()> {
     setup_panic!();
     let args = args::Args::parse();
+    Userscripts::validate_combination(&args.with_userscripts)?;
     let original_output = args.output.clone();
     let one_file = args.one_html_file;
     env_logger::builder()
@@ -567,12 +586,15 @@ async fn main() -> Result<()> {
     ctx.show_step(6, "Retrieving additional external player sources...");
     ctx.retrieve_player_sources().await?;
 
+    ctx.show_step(7, "Applying userscripts...");
+    ctx.append_userscripts().await?;
+
     let original_state = ctx.player.as_ref().unwrap().save();
     let mut output_path: &PathBuf = &PathBuf::new();
     for case in cases {
         // Need to reset transformed player.
         ctx.show_step(
-            7,
+            8,
             &format!(
                 "Writing case \"{}\" to disk...",
                 case.case_information.title

@@ -8,6 +8,7 @@ Downloads cases from [Ace Attorney Online](https://aaonline.fr) to be playable o
 - Use parallel downloads to download case data quickly.
 - Download multiple cases at once.
 - Use the `-1` flag to compile the case into a single HTML file, without the need for a separate assets folder.
+- Apply [userscripts](https://aaonline.fr/forum/viewtopic.php?t=13534) to get a better layout, keyboard controls, and a backlog.
 - Choose a specific version of the Ace Attorney Online player (e.g., if a case only works with an older version).
 - Automatically remove photobucket watermarks from downloaded assets.
 
@@ -33,7 +34,8 @@ By default, the case will be put into a directory with the case title as its nam
 The downloaded case can then be played by opening the `index.html` file in the output directory—all case assets are put in the `assets` directory, so if you want to move this downloaded case somewhere else, you'll need to move the `assets` along with it.
 Alternatively, you can pass the `-1` flag to aaoffline, which causes the case to be compiled into a single (large) HTML file, with the assets encoded as data URLs instead of being put into separate files. (Warning: Browsers may not like HTML files very much that are multiple dozens of megabytes large. Your mileage may vary.)
 
-There are some additional parameters you can set, such as `--concurrent-downloads` to choose a different number of parallel downloads to use[^2], or `--player-version` to choose a specific commit of the player.
+There are some additional parameters you can set, such as `--concurrent-downloads` to choose a different number of parallel downloads to use[^2], `--player-version` to choose a specific commit of the player, or `--with-userscripts` to apply [userscripts](https://aaonline.fr/forum/viewtopic.php?t=13534).
+
 To get an overview of available options, just run `aaoffline --help`.
 
 ## Building / Installing
