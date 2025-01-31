@@ -303,8 +303,9 @@ impl AssetCollector {
     /// The [`file_value`] will be replaced with the new path[^1]. The given [`path_components`]
     /// will be put in front of the URL, and the [`external`] flag will determine whether the URL
     /// is hosted on Ace Attorney Online or externally. The [`default_extension`] will be applied
-    /// if the given [`file_value`] has no extension. If a [`filename`] is given, it will be used
-    /// (or try to be used, as long as it hasn't been used yet) as the filename for the asset.
+    /// if the given [`file_value`] has no extension and if its host is the Ace Attorney Online
+    /// server. If a [`filename`] is given, it will be used (or try to be used, as long as it
+    /// hasn't been used yet) as the filename for the asset.
     ///
     /// [^1]: Note that this will be the "case-local" path to the asset, which is distinct from the
     /// "case-global" path to the asset where it will be saved relative to the current directory.
@@ -320,12 +321,13 @@ impl AssetCollector {
     ) -> Option<&AssetDownload> {
         // First, we need to construct the URL to the target resource out of the given parameters.
         let file_string = file_value.as_str().unwrap_or(&self.default_icon_url).trim();
+        let non_aao: bool = external.unwrap_or(true) && file_string.starts_with("http");
         if file_string.is_empty() {
             // We can ignore empty URLs.
             return None;
         }
         let mut file = PathBuf::from(file_string);
-        if file.extension().is_none() {
+        if !non_aao && file.extension().is_none() {
             if let Some(ext) = default_extension {
                 file.set_extension(ext);
             }
@@ -338,7 +340,7 @@ impl AssetCollector {
                     .expect("Non-external path needs path components!")
                     .join("/"),
             )
-        } else if file_string.starts_with("http") {
+        } else if non_aao {
             file_string
         } else {
             &format!("{AAONLINE_BASE}/{file_string}")
