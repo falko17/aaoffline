@@ -9,6 +9,7 @@ use futures::{stream, FutureExt, StreamExt};
 use indicatif::ProgressBar;
 use itertools::Itertools;
 use log::{debug, error, trace, warn};
+use mime2ext::mime2ext;
 use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Url;
@@ -96,14 +97,16 @@ impl Download {
 
     /// Converts this [Download] to a base64 data URL.
     pub(crate) fn make_data_url(&self) -> String {
-        let mime = self
-            .content_type()
-            .or_else(|| infer::get(&self.content).map(|x| x.mime_type()))
-            .unwrap_or("application/octet-stream");
+        let mime = self.mime_type().unwrap_or("application/octet-stream");
         format!(
             "data:{mime};base64,{}",
             BASE64_STANDARD.encode(&self.content)
         )
+    }
+
+    pub(crate) fn mime_type(&self) -> Option<&str> {
+        self.content_type()
+            .or_else(|| infer::get(&self.content).map(|x| x.mime_type()))
     }
 
     /// Returns the filename under which this download should be saved.
@@ -128,7 +131,13 @@ impl Download {
                 .and_then(Iterator::last)
                 .unwrap_or(self.target_url.path());
             // Remove any query parameters.
-            let path = PathBuf::from(REMOVE_QUERY_PARAMETERS_REGEX.replace(name, "").to_string());
+            let mut path =
+                PathBuf::from(REMOVE_QUERY_PARAMETERS_REGEX.replace(name, "").to_string());
+            if path.extension().is_none() {
+                if let Some(mime_ext) = self.mime_type().and_then(mime2ext) {
+                    path.set_extension(mime_ext);
+                }
+            }
             path.file_name()
                 .unwrap_or(path.as_os_str())
                 .to_str()
