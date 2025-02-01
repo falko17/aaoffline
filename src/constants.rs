@@ -99,6 +99,10 @@ pub(crate) mod re {
 
     pub(crate) static CONTENT_DISPOSITION_FILENAME_REGEX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"filename="([^"]*?)""#).unwrap());
+
+    pub(crate) static GRAPHIC_ELEMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"\s+element\.style\.height\s*=\s*img\.height\s*\+\s*['"]px['"];"#).unwrap()
+    });
 }
 
 pub(crate) const AAONLINE_BASE: &str = "https://aaonline.fr";

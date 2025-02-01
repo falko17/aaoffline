@@ -789,6 +789,34 @@ impl Player {
             warn!("Could not find default place preloading in scripts, skipping.");
         }
 
+        // There is a weird bug that I so far only noticed with Strangers in the
+        // Land of Turnabouts (106832). In the trial segments, Albert's and Phoenix'
+        // sprites quite frequently only appear after they're done speaking their first
+        // line of text, staying invisible until then. This only happens in the offline version.
+        // The cause seems to be that the sprite's dimensions are used before they're loaded,
+        // leading to them being 0, this is what the replacement below patches. However, this isn't
+        // the true root cause—the callback using the image dimensions is only called after the
+        // image is done loading, so this should be impossible. Here, it seems to be triggered for
+        // the sprite when the background is done loading, for some reason. I think something in
+        // the callback handling system works differently for offline versions (perhaps due to
+        // near-zero load times?), but I haven't figured this out yet,
+        // so the below will have to do for now.
+        let mut found_img = false;
+        for img_handler in re::GRAPHIC_ELEMENT_REGEX.find_iter(scripts) {
+            found_img = true;
+            replacements.push(PlayerTransformation::new(
+                TransformationTarget::Scripts,
+                // Append after the match.
+                img_handler.start()..img_handler.start(),
+                String::from(
+                    "\nif (img.height == 0) img.height = 192; if (img.width == 0) img.width = 256;\n",
+                ),
+            ));
+        }
+        if !found_img {
+            warn!("Could not find image handling code, skipping.");
+        }
+
         // When ending a case, it's possible that we might be redirected to another entry
         // of the same sequence. To support this (when the user downloads multiple cases),
         // we need to add another ugly hack here to hard-code the resulting paths.
