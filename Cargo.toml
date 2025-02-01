@@ -2,7 +2,7 @@
 name = "aaoffline"
 description = "Downloads cases from Ace Attorney Online to be playable offline"
 repository = "https://github.com/falko17/aaoffline"
-version = "1.3.0"
+version = "1.3.1"
 edition = "2021"
 license = "MIT"
 authors = ["Falko Galperin <github@falko.de>"]
