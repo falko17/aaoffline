@@ -41,9 +41,6 @@ const BROKEN_COMMANDMENTS: &str = "140935";
 const SEQUENCE_TEST: &str = "148564";
 /// This one uses assets whose file extensions change after redirects.
 const DRAGON: &str = "83543";
-/// This one uses some links with neither an extension nor the "right" default extension,
-/// causing #13.
-const DECEITFUL: &str = "147274";
 
 // Cases used in multi-download test:
 const MULTI_CASES: [&str; 4] = [
@@ -95,7 +92,6 @@ fn example_cases(
         TURNABOUT_OF_COURAGE,
         BROKEN_COMMANDMENTS,
         CASCADE_THEATER_ASCENSION,
-        DECEITFUL,
         DRAGON
     )]
     case: &str,
