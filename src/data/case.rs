@@ -13,14 +13,14 @@ use anyhow::anyhow;
 use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use serde_with::formats::Flexible;
 use serde_with::TimestampSeconds;
+use serde_with::formats::Flexible;
 
 use std::collections::HashSet;
 use std::fmt::Display;
 
-use crate::constants::re;
 use crate::constants::AAONLINE_BASE;
+use crate::constants::re;
 use crate::data::RegexNotMatched;
 
 /// Represents the information of a case.
@@ -28,7 +28,7 @@ use crate::data::RegexNotMatched;
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub(crate) struct CaseInformation {
     /// The name of the author of the case.
-    author: String,
+    author: Option<String>,
     /// The ID of the author of the case.
     author_id: u32,
     /// Whether the case can be read by the current user.
@@ -112,7 +112,10 @@ impl Display for CaseInformation {
             f,
             "{} by {} [last edited on {}]",
             title.bold(),
-            self.author.italic(),
+            self.author
+                .as_ref()
+                .expect("Author must be set at this point")
+                .italic(),
             self.last_edit_date
         )
     }
@@ -153,7 +156,7 @@ impl Case {
         .context("Case data seems to be inaccessible.")?
         .text().await?;
 
-        let case_information =
+        let mut case_information: CaseInformation =
             super::retrieve_escaped_json(&re::TRIAL_INFORMATION_REGEX, &case_script).map_err(
                 |x| {
                     if x.root_cause().is::<RegexNotMatched>() {
@@ -163,6 +166,11 @@ impl Case {
                     }
                 },
             )?;
+
+        // The trial's author can actually become null: https://aaonline.fr/forum/viewtopic.php?t=13898
+        case_information
+            .author
+            .get_or_insert(String::from("[UNKNOWN]"));
 
         let case_data = super::retrieve_escaped_json(&re::TRIAL_DATA_REGEX, &case_script)?;
         debug!("{:?}", case_information);
@@ -233,7 +241,9 @@ impl Case {
         // We will reserialize it to JSON to include any changes we made.
         let ser_trial_info = serde_json::to_string(&self.case_information)?;
         let ser_trial_data = serde_json::to_string(&self.case_data)?;
-        Ok(format!("var trial_information = {ser_trial_info};\nvar initial_trial_data = {ser_trial_data};\n"))
+        Ok(format!(
+            "var trial_information = {ser_trial_info};\nvar initial_trial_data = {ser_trial_data};\n"
+        ))
     }
 }
 
