@@ -2,17 +2,17 @@
 name = "aaoffline"
 description = "Downloads cases from Ace Attorney Online to be playable offline"
 repository = "https://github.com/falko17/aaoffline"
-version = "1.3.1"
+version = "1.3.2"
 edition = "2024"
 license = "MIT"
 authors = ["Falko Galperin <github@falko.de>"]
 
 [dependencies]
-anyhow = { version = "1.0.95", features = ["backtrace"] }
+anyhow = { version = "1.0.97", features = ["backtrace"] }
 base64 = "0.22.1"
-bytes = "1.10.0"
-chrono = "0.4.39"
-clap = { version = "4.5.29", features = ["derive"] }
+bytes = "1.10.1"
+chrono = "0.4.40"
+clap = { version = "4.5.31", features = ["derive"] }
 clap-verbosity-flag = "3.0.2"
 colored = "3.0.0"
 const_format = "0.2.34"
@@ -20,23 +20,22 @@ dialoguer = "0.11.0"
 env_logger = "0.11.6"
 exitcode = "1.1.2"
 futures = "0.3.31"
-human-panic = "2.0.2"
 indicatif = "0.17.11"
 infer = { version = "0.19.0", default-features = false }
 itertools = "0.14.0"
-log = "0.4.25"
+log = "0.4.26"
 mime2ext = "0.1.53"
 regex = "1.11.1"
 reqwest = { version = "0.12.12", features = ["gzip"] }
-reqwest-middleware = "0.4.0"
+reqwest-middleware = "0.4.1"
 reqwest-retry = "0.7.0"
 sanitize-filename = "0.6.0"
-serde = { version = "1.0.217", features = ["derive"] }
-serde_json = "1.0.138"
+serde = { version = "1.0.218", features = ["derive"] }
+serde_json = "1.0.140"
 serde_with = { version = "3.12.0", features = ["chrono"] }
-tokio = { version = "1.43.0", features = ["full"] }
-tokio-stream = { version = "0.1.17", features = ["fs"] }
 urlencoding = "2.1.3"
+human-panic = "2.0.2"
+tokio = { version = "1.44.0", features = ["full"] }
 
 [profile.release]
 codegen-units = 1
@@ -50,8 +49,8 @@ too_many_arguments = "allow"
 [dev-dependencies]
 assert_cmd = "2.0.16"
 glob = "0.3.2"
-headless_chrome = "1.0.15"
+headless_chrome = "1.0.17"
 maplit = "1.0.2"
-rstest = "0.24.0"
+rstest = "0.25.0"
 rstest_reuse = "0.7.0"
-tempfile = "3.16.0"
+tempfile = "3.18.0"
