@@ -9,22 +9,22 @@ use std::{
 
 use assert_cmd::Command;
 use headless_chrome::{
+    Browser, LaunchOptionsBuilder,
     browser::tab::EventListener,
     protocol::cdp::{
-        types::Event,
         Log::{
-            events::{EntryAddedEvent, EntryAddedEventParams},
             LogEntry, LogEntryLevel,
+            events::{EntryAddedEvent, EntryAddedEventParams},
         },
         Page::events::JavascriptDialogOpeningEvent,
+        types::Event,
     },
-    Browser, LaunchOptionsBuilder,
 };
 use itertools::Itertools;
 use maplit::hashmap;
 use rstest::{fixture, rstest};
 use rstest_reuse::{apply, template};
-use tempfile::{tempdir, TempDir};
+use tempfile::{TempDir, tempdir};
 
 const GAME_OF_TURNABOUTS: &str = "106140";
 // This one is also the smallest of these cases, so we will use it frequently.
@@ -250,10 +250,10 @@ fn test_html5_cors_error(mut cmd: Cmd) {
     let errors = verify_with_browser(cmd.path_as_str(), None)
         .expect_err("expected CORS errors when not using HTML5 audio");
     if let Some(JsError { errors }) = errors.downcast_ref::<JsError>() {
-        assert!(errors
-            .iter()
-            .all(|x| x.1 == Source::Console
-                && (x.0.contains("CORS") || x.0.contains("net::ERR_FAILED"))));
+        assert!(
+            errors.iter().all(|x| x.1 == Source::Console
+                && (x.0.contains("CORS") || x.0.contains("net::ERR_FAILED")))
+        );
     } else {
         panic!("expected JsError, got {errors:?}");
     }

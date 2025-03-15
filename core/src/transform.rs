@@ -5,11 +5,11 @@ pub(crate) mod php {
     use std::ops::Range;
     use std::sync::LazyLock;
 
-    use anyhow::Result;
-    use log::{error, trace, warn};
+    use anyhow::{Result, anyhow};
+    use log::{trace, warn};
     use regex::Regex;
 
-    use crate::constants::{re, UPDATE_MESSAGE};
+    use crate::constants::{UPDATE_MESSAGE, re};
     use crate::data::case::Case;
     use crate::data::player::PlayerScripts;
 
@@ -83,9 +83,9 @@ pub(crate) mod php {
             if let Some(Range { start, end }) = self.range {
                 if (other.start, other.end) != (start, end) {
                     warn!(
-                    "Expected PHP block {} to be at character range ({start}–{end}), but was at ({}–{}). {UPDATE_MESSAGE}",
-                    self.id, other.start, other.end
-                );
+                        "Expected PHP block {} to be at character range ({start}–{end}), but was at ({}–{}). {UPDATE_MESSAGE}",
+                        self.id, other.start, other.end
+                    );
                 }
             }
         }
@@ -103,8 +103,7 @@ pub(crate) mod php {
         fn matches(&self, text: &str) -> bool {
             trace!(
                 "Matching PHP block {} with {} to {text}...",
-                self.id,
-                self.detector.to_string()
+                self.id, *self.detector
             );
             self.detector.is_match(text)
         }
@@ -156,11 +155,10 @@ pub(crate) mod php {
                 warn!("Unexpected PHP block at ({start}–{end}). Removing from HTML.",);
                 FoundPhpBlock::new_unexpected(start, end)
             } else if result.len() > 1 {
-                error!(
+                return Err(anyhow!(
                     "Invalid ({}) matches for PHP block at ({start}–{end}). {UPDATE_MESSAGE}",
                     result.len(),
-                );
-                std::process::exit(exitcode::SOFTWARE);
+                ));
             } else {
                 let result = result[0];
                 let mut block = FoundPhpBlock::new(start, end);

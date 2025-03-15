@@ -1,8 +1,8 @@
 //! Contains data models related to the configuration of Ace Attorney Online.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use const_format::formatcp;
-use log::{error, trace};
+use log::trace;
 
 use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use std::collections::{HashMap, HashSet};
 
-use crate::constants::{re, AAONLINE_BASE, BRIDGE_URL};
+use crate::constants::{AAONLINE_BASE, BRIDGE_URL, re};
 
 /// Default data for the Ace Attorney Online player.
 ///
@@ -44,8 +44,7 @@ impl DefaultData {
         let default_profiles_startup = if let Value::Object(startup_map) = startup_value {
             startup_map.into_iter().map(|x| x.0).collect()
         } else {
-            error!("Default profiles startup map is not an object!");
-            std::process::exit(exitcode::DATAERR);
+            return Err(anyhow!("Default profiles startup map is not an object!"));
         };
 
         let default_places =

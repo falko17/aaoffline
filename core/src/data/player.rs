@@ -1,15 +1,14 @@
 //! Contains data model related to the case player and its scripts.
 
 use crate::args::Userscripts;
-use crate::constants::{re, AAONLINE_BASE, BITBUCKET_URL};
+use crate::constants::{AAONLINE_BASE, BITBUCKET_URL, re};
 use crate::download::Download;
 use crate::transform::php;
-use crate::GlobalContext;
+use crate::{GlobalContext, ProgressReporter};
 use anyhow::{Context, Result};
 
 use const_format::formatcp;
-use futures::{stream, StreamExt};
-use indicatif::ProgressBar;
+use futures::{StreamExt, stream};
 use itertools::Itertools;
 use log::{debug, trace, warn};
 
@@ -132,7 +131,7 @@ impl PlayerScripts {
     async fn retrieve_js_modules(
         &self,
         site_data: &SiteData,
-        pb: Option<&ProgressBar>,
+        pb: Option<&dyn ProgressReporter>,
         module_transformer: ModuleTransformer,
     ) -> Result<String> {
         let mut targets: Vec<String> = vec![String::from("player")];
@@ -233,7 +232,7 @@ impl PlayerScripts {
         &self,
         site_data: &SiteData,
         name: String,
-        pb: Option<&ProgressBar>,
+        pb: Option<&dyn ProgressReporter>,
         module_transformer: ModuleTransformer,
     ) -> Result<JsModule> {
         debug!("Retrieving JS module {name}");
@@ -283,7 +282,7 @@ impl PlayerScripts {
     pub(crate) async fn retrieve_player_scripts(
         &mut self,
         site_data: &SiteData,
-        pb: &ProgressBar,
+        pb: &dyn ProgressReporter,
         transform_module: ModuleTransformer,
     ) -> Result<()> {
         pb.inc_length(37);
@@ -401,14 +400,14 @@ impl Player {
     }
 
     /// Retrieves the player scripts from the AAO repository.
-    pub(crate) async fn retrieve_scripts(&mut self, pb: &ProgressBar) -> Result<()> {
+    pub(crate) async fn retrieve_scripts(&mut self, pb: &dyn ProgressReporter) -> Result<()> {
         self.scripts
             .retrieve_player_scripts(&self.site_data, pb, Self::transform_module)
             .await
     }
 
     /// Retrieves the userscripts and appends them to the player scripts.
-    pub(crate) async fn retrieve_userscripts(&mut self, pb: &ProgressBar) -> Result<()> {
+    pub(crate) async fn retrieve_userscripts(&mut self, pb: &dyn ProgressReporter) -> Result<()> {
         const HTML_END: &str = "</html>";
         let urls = Userscripts::all_urls(&self.scripts.ctx.args.with_userscripts);
         let client = &self.scripts.ctx.client;
@@ -474,7 +473,10 @@ impl Player {
 
     /// Retrieves the player's miscellaneous external sources (e.g., sources mentioned in CSS URLs)
     /// and transforms them to work offline.
-    pub(crate) async fn retrieve_player_misc_sources(&mut self, pb: &ProgressBar) -> Result<()> {
+    pub(crate) async fn retrieve_player_misc_sources(
+        &mut self,
+        pb: &dyn ProgressReporter,
+    ) -> Result<()> {
         const PRELOAD: &str = "preload: true";
 
         let mut replacements: Vec<PlayerTransformation> = Vec::new();
@@ -671,7 +673,9 @@ impl Player {
                         format!(", html5: {}", !self.scripts.ctx.args.disable_html5_audio),
                     ));
                 } else if self.scripts.ctx.args.disable_html5_audio {
-                    warn!("--disable-html5-audio has no effect when used together with --one-html-file (-1), as HTML5 audio is disabled anyway.");
+                    warn!(
+                        "--disable-html5-audio has no effect when used together with --one-html-file (-1), as HTML5 audio is disabled anyway."
+                    );
                 }
             } else if let Err(e) = result {
                 warn!("Could not download Howler.js, skipping: {e}");
@@ -716,8 +720,9 @@ impl Player {
                 for ((base, sprite_id, status), url) in
                     &self.site_data.default_data.default_sprite_urls
                 {
-                    sprite_js +=
-                        &format!("if (base === '{base}' && sprite_id === {sprite_id} && status === '{status}') return '{url}';\n");
+                    sprite_js += &format!(
+                        "if (base === '{base}' && sprite_id === {sprite_id} && status === '{status}') return '{url}';\n"
+                    );
                 }
                 sprite_js += "return 'data:image/gif;base64,'";
                 sprite_js

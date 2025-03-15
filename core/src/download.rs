@@ -1,37 +1,36 @@
 //! Contains data structures and methods for downloading case data.
 
-use anyhow::{anyhow, Context, Result};
-use base64::prelude::BASE64_STANDARD;
+use anyhow::{Context, Result, anyhow};
 use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use bytes::Bytes;
 use futures::future::join_all;
-use futures::{stream, FutureExt, StreamExt};
-use indicatif::ProgressBar;
+use futures::stream::{AbortHandle, Abortable};
+use futures::{FutureExt, StreamExt, stream};
 use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use mime2ext::mime2ext;
 use regex::Regex;
-use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Url;
+use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest_middleware::ClientWithMiddleware;
 use sanitize_filename::sanitize;
 use serde_json::Value;
 use std::borrow::Cow;
-use std::cell::OnceCell;
 use std::collections::hash_set::Drain;
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::string::FromUtf8Error;
-use tokio::fs::{self};
-use tokio::io;
+use tokio::sync::OnceCell;
 
-use crate::constants::re::{CONTENT_DISPOSITION_FILENAME_REGEX, REMOVE_QUERY_PARAMETERS_REGEX};
+use crate::ProgressReporter;
 use crate::constants::AAONLINE_BASE;
+use crate::constants::re::{CONTENT_DISPOSITION_FILENAME_REGEX, REMOVE_QUERY_PARAMETERS_REGEX};
 use crate::data::case::Case;
 use crate::data::site::{SiteData, SitePaths};
-use crate::{args::HttpHandling, GlobalContext};
+use crate::{GlobalContext, args::HttpHandling};
 
 /// Downloaded content.
 pub(crate) struct Download {
@@ -57,7 +56,7 @@ impl Download {
                 HttpHandling::AllowInsecure => url.to_string(),
                 HttpHandling::RedirectToHttps => url.replacen("http://", "https://", 1),
                 HttpHandling::Disallow => {
-                    return Err(anyhow!("Blocking insecure HTTP request to {url}."))
+                    return Err(anyhow!("Blocking insecure HTTP request to {url}."));
                 }
             }
         } else if url.starts_with("https://") {
@@ -426,9 +425,17 @@ impl<'a> AssetDownloader<'a> {
         }
     }
 
-    /// Sets the output directory for the collected assets.
-    pub(crate) fn set_output(&mut self, output: PathBuf) {
+    /// Sets the output directory for the collected assets, creating it if necessary.
+    pub(crate) async fn set_output(&mut self, output: PathBuf) -> Result<(), std::io::Error> {
+        // May need to create the directory first.
+        if !self.ctx.args.one_html_file {
+            self.ctx
+                .writer
+                .create_dir_all(&output.join("assets"))
+                .await?;
+        }
         self.collector.output = output;
+        Ok(())
     }
 
     /// Handles the given asset [`err`] that occurred for the given [`case_title`] by
@@ -443,9 +450,6 @@ impl<'a> AssetDownloader<'a> {
                 " (set --continue-on-asset-error to ignore this)"
             }
         );
-        if !self.ctx.args.continue_on_asset_error {
-            std::process::exit(exitcode::UNAVAILABLE);
-        }
     }
 
     /// Downloads the given [assets] **in parallel** with the configured number of concurrent downloads.
@@ -454,10 +458,12 @@ impl<'a> AssetDownloader<'a> {
     async fn download_assets(
         &self,
         assets: Vec<AssetDownload>,
-        pb: &ProgressBar,
-    ) -> Vec<AssetDownload> {
-        stream::iter(assets)
-            .map(|mut asset| async move {
+        pb: &dyn ProgressReporter,
+    ) -> Result<Vec<AssetDownload>> {
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+        let total_assets = assets.len();
+        let result = Abortable::new(
+            stream::iter(assets).map(|mut asset| async {
                 let download = self
                     .download_asset(&mut asset)
                     .map(|x| {
@@ -466,16 +472,38 @@ impl<'a> AssetDownloader<'a> {
                     })
                     .await;
                 download
-                    .inspect_err(|e| self.handle_asset_error(e, Some(&asset.case_title)))
+                    .inspect_err(|e| {
+                        self.handle_asset_error(e, Some(&asset.case_title));
+                        if !self.ctx.args.continue_on_asset_error {
+                            abort_handle.abort();
+                        }
+                    })
                     .map(|()| asset)
                     .ok()
-            })
-            .buffer_unordered(self.ctx.args.concurrent_downloads)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .flatten()
-            .collect()
+            }),
+            abort_registration,
+        )
+        .buffer_unordered(self.ctx.args.concurrent_downloads)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+        if result.len() < total_assets {
+            if self.ctx.args.continue_on_asset_error {
+                let failed = total_assets - result.len();
+                warn!(
+                    "{failed} asset download{} failed, continuing anyway.",
+                    if failed == 1 { "" } else { "s" }
+                );
+                Ok(result)
+            } else {
+                Err(anyhow!("Asset download failed, aborting case download."))
+            }
+        } else {
+            Ok(result)
+        }
     }
 
     /// Downloads the given [asset] and writes it to its set path.
@@ -491,14 +519,20 @@ impl<'a> AssetDownloader<'a> {
                 .expect("path must not be set already");
         } else if let Some(path) = asset.path.get() {
             // We need to reuse the existing path here.
-            Self::write_asset(&PathBuf::from(path), &download.content).await?;
+            self.ctx
+                .writer
+                .write_asset(&PathBuf::from(path), &download.content)
+                .await?;
         } else {
             let path = AssetCollector::new_path(
                 &asset.output_path,
                 download.target_url.as_str(),
                 Path::new(&download.filename()),
             );
-            Self::write_asset(&path, &download.content).await?;
+            self.ctx
+                .writer
+                .write_asset(&path, &download.content)
+                .await?;
             asset
                 .path
                 .set(
@@ -509,27 +543,6 @@ impl<'a> AssetDownloader<'a> {
                 )
                 .expect("path must have been none here");
         }
-        Ok(())
-    }
-
-    /// Writes the given [content] to the given [path].
-    async fn write_asset(path: &PathBuf, content: &[u8]) -> Result<()> {
-        // Write to file. We may need to create the containing directories first.
-        debug!("Writing {}...", path.display());
-        let dir = path.parent().expect("no parent directory in path");
-        assert!(dir.ends_with("assets"));
-        fs::create_dir_all(dir).await.with_context(|| {
-            format!(
-                "Could not create directory {}. Please check your permissions.",
-                dir.display()
-            )
-        })?;
-        fs::write(path, content).await.with_context(|| {
-            format!(
-                "Could not write file to {}. Please check your permissions.",
-                path.display()
-            )
-        })?;
         Ok(())
     }
 
@@ -558,57 +571,28 @@ impl<'a> AssetDownloader<'a> {
         if let Some(path) = asset.and_then(|x| x.path.get()) {
             let original_path = PathBuf::from(path);
             let original_name = original_path.file_name().expect("must have file path");
+            let writer = &self.ctx.writer;
             join_all(
                 (1..=max_locks)
                     .map(|i| original_path.with_file_name(format!("{name}_{i}.gif")))
-                    .map(|p| async move { (p.clone(), Self::symlink(original_name, &p).await) })
+                    .map(|p| async move {
+                        (
+                            p.clone(),
+                            writer.symlink(Path::new(original_name), &p).await,
+                        )
+                    })
                     .map(|future| async move {
                         let (p, result) = future.await;
                         if let Err(e) = result {
                             warn!(
                                 "Could not create symbolic link: {e}. Hard-linking file instead."
                             );
-                            // Hard-links will only work if there's already a file here, so we'll
-                            // create a place-holder.
-                            fs::File::create(path)
-                                .await
-                                .expect("Could not create placeholder psyche-lock");
-                            fs::hard_link(path, p)
-                                .await
-                                .expect("Could not hard-link file");
+                            writer.hardlink(Path::new(path), &p).await;
                         }
                     }),
             )
             .await;
         }
-    }
-
-    /// Creates a symbolic link from the given [orig] to the given [target].
-    #[cfg(unix)]
-    async fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(
-        orig: P,
-        target: Q,
-    ) -> Result<(), std::io::Error> {
-        if let Err(e) = tokio::fs::remove_file(target.as_ref()).await {
-            if e.kind() != io::ErrorKind::NotFound {
-                return Err(e);
-            }
-        }
-        tokio::fs::symlink(orig, target).await
-    }
-
-    /// Creates a symbolic link from the given [orig] to the given [target].
-    #[cfg(windows)]
-    async fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(
-        orig: P,
-        target: Q,
-    ) -> Result<(), std::io::Error> {
-        if let Err(e) = tokio::fs::remove_file(target.as_ref()).await {
-            if e.kind() != io::ErrorKind::NotFound {
-                return Err(e);
-            }
-        }
-        tokio::fs::symlink_file(orig, target).await
     }
 
     /// Collects the case asset download requests for the given [case] and [`site_data`], returning
@@ -879,7 +863,9 @@ impl<'a> AssetDownloader<'a> {
                 .or_else(|| object["external"].as_i64().map(|x| x == 1))
                 .unwrap_or(false)
             {
-                warn!("Found non-external foreground/background object, even though these should always be external! Skipping.");
+                warn!(
+                    "Found non-external foreground/background object, even though these should always be external! Skipping."
+                );
                 continue;
             }
             self.collector.collect_download(
@@ -1044,21 +1030,19 @@ impl<'a> AssetDownloader<'a> {
     /// Downloads the given collected (possibly faulty) [downloads] in parallel.
     pub(crate) async fn download_collected(
         &mut self,
-        pb: &ProgressBar,
+        pb: &dyn ProgressReporter,
         downloads: Vec<AssetDownload>,
         cases: &mut [Case],
         site_data: &mut SiteData,
     ) -> Result<()> {
         pb.inc_length(downloads.len() as u64);
-        let successes = self.download_assets(downloads, pb).await;
+        let downloaded = self.download_assets(downloads, pb).await?;
 
-        //if self.ctx.args.one_html_file {
         // We now need to write back the data URLs into the JSON.
         let mut case_map: HashMap<u32, &mut Case> = cases.iter_mut().map(|x| (x.id(), x)).collect();
-        for asset in successes {
+        for asset in downloaded {
             Self::rewrite_data(&asset, &mut case_map, site_data);
         }
-        //}
         Ok(())
     }
 
