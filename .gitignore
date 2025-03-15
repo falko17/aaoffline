@@ -11,3 +11,4 @@ target/
 
 # RustRover
 .idea/
+wasm/www/.bin

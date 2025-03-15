@@ -1,0 +1,30 @@
+[package]
+name = "aaoffline-wasm"
+description = "Downloads cases from Ace Attorney Online to be playable offline (WASM bindings)"
+repository.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+version.workspace = true
+
+[features]
+default = ["console_error_panic_hook"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+aaoffline = { path = "../core" }
+anyhow = "1.0.97"
+async-trait = "0.1.87"
+clap-verbosity-flag = "3.0.2"
+console_error_panic_hook = { version = "0.1.7", optional = true }
+log = "0.4.26"
+parking_lot = "0.12.3"
+wasm-bindgen = "0.2.100"
+wasm-bindgen-futures = "0.4.50"
+web-sys = { version = "0.3.77", features = ["console"] }
+zip = { version = "2.2.3", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.34"
