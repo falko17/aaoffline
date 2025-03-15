@@ -1,0 +1,29 @@
+{
+  "name": "aaoffline-app",
+  "version": "0.1.0",
+  "description": "download cases from Ace Attorney Online in your browser",
+  "main": "index.js",
+  "bin": {
+    "aaoffline-app": ".bin/aaoffline.js"
+  },
+  "scripts": {
+    "build": "webpack --config webpack.config.js",
+    "start": "webpack-dev-server"
+  },
+  "keywords": [
+    "webassembly",
+    "wasm",
+    "rust",
+    "webpack"
+  ],
+  "dependencies": {
+    "aaoffline-wasm": "file:../pkg"
+  },
+  "devDependencies": {
+    "copy-webpack-plugin": "^13.0.0",
+    "hello-wasm-pack": "^0.1.0",
+    "webpack": "^5.98.0",
+    "webpack-cli": "^6.0.1",
+    "webpack-dev-server": "^5.2.0"
+  }
+}
