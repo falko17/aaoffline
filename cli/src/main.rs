@@ -1,6 +1,6 @@
+use aaoffline::MainContext;
 use aaoffline::args::{Args, Userscripts};
 use aaoffline::fs::TokioFsWriter;
-use aaoffline::MainContext;
 use anyhow::Result;
 use args::CliArgs;
 use clap::error::ErrorKind;

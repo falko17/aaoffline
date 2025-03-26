@@ -572,7 +572,7 @@ impl MainContext {
                 .sequence
                 .as_ref()
                 .unwrap();
-            *output = PathBuf::from(&sequence.title);
+            *output = PathBuf::from(&sequence.title.trim());
         } else if !one_case && original_output.is_none() {
             // Downloaded cases are not part of a single sequence.
             // We'll put them in the current directory.
