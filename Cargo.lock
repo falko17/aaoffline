@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aaoffline"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "aaoffline-cli"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "aaoffline",
  "anyhow",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "aaoffline-gui"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "aaoffline",
  "anyhow",
