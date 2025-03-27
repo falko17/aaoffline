@@ -114,7 +114,7 @@ impl Display for CaseInformation {
             title.bold(),
             self.author
                 .as_ref()
-                .expect("Author must be set at this point")
+                .unwrap_or(&"UNKNOWN AUTHOR".into())
                 .italic(),
             self.last_edit_date
         )
