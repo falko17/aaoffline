@@ -9,22 +9,22 @@ use std::{
 
 use assert_cmd::Command;
 use headless_chrome::{
-    Browser, LaunchOptionsBuilder,
     browser::tab::EventListener,
     protocol::cdp::{
+        types::Event,
         Log::{
-            LogEntry, LogEntryLevel,
             events::{EntryAddedEvent, EntryAddedEventParams},
+            LogEntry, LogEntryLevel,
         },
         Page::events::JavascriptDialogOpeningEvent,
-        types::Event,
     },
+    Browser, LaunchOptionsBuilder,
 };
 use itertools::Itertools;
 use maplit::hashmap;
 use rstest::{fixture, rstest};
 use rstest_reuse::{apply, template};
-use tempfile::{TempDir, tempdir};
+use tempfile::{tempdir, TempDir};
 
 const GAME_OF_TURNABOUTS: &str = "106140";
 // This one is also the smallest of these cases, so we will use it frequently.
@@ -41,6 +41,8 @@ const BROKEN_COMMANDMENTS: &str = "140935";
 const SEQUENCE_TEST: &str = "148564";
 /// This one uses assets whose file extensions change after redirects.
 const DRAGON: &str = "83543";
+/// This one has a custom PointArea, which caused issue #18:
+const AAOFFLINE_TEST: &str = "148576";
 
 // Cases used in multi-download test:
 const MULTI_CASES: [&str; 4] = [
@@ -92,7 +94,8 @@ fn example_cases(
         TURNABOUT_OF_COURAGE,
         BROKEN_COMMANDMENTS,
         CASCADE_THEATER_ASCENSION,
-        DRAGON
+        DRAGON,
+        AAOFFLINE_TEST
     )]
     case: &str,
 ) {
@@ -250,10 +253,10 @@ fn test_html5_cors_error(mut cmd: Cmd) {
     let errors = verify_with_browser(cmd.path_as_str(), None)
         .expect_err("expected CORS errors when not using HTML5 audio");
     if let Some(JsError { errors }) = errors.downcast_ref::<JsError>() {
-        assert!(
-            errors.iter().all(|x| x.1 == Source::Console
-                && (x.0.contains("CORS") || x.0.contains("net::ERR_FAILED")))
-        );
+        assert!(errors
+            .iter()
+            .all(|x| x.1 == Source::Console
+                && (x.0.contains("CORS") || x.0.contains("net::ERR_FAILED"))));
     } else {
         panic!("expected JsError, got {errors:?}");
     }
