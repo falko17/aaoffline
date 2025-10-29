@@ -7,7 +7,7 @@ repository = "https://github.com/falko17/aaoffline"
 edition = "2024"
 license = "MIT"
 authors = ["Falko Galperin <github@falko.de>"]
-version = "2.0.1"
+version = "2.0.2"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

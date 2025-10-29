@@ -228,7 +228,7 @@ impl eframe::App for AaofflineApp {
                                     .enable_time_button(false)
                                     .max_log_length(50_000);
                                 for category in ENABLED_CATEGORIES {
-                                    logger = logger.enable_category(category.into(), true);
+                                    logger = logger.enable_category(category, true);
                                 }
                                 logger.show(ui);
                             }
