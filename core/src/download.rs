@@ -132,10 +132,10 @@ impl Download {
             // Remove any query parameters.
             let mut path =
                 PathBuf::from(REMOVE_QUERY_PARAMETERS_REGEX.replace(name, "").to_string());
-            if path.extension().is_none() {
-                if let Some(mime_ext) = self.mime_type().and_then(mime2ext) {
-                    path.set_extension(mime_ext);
-                }
+            if path.extension().is_none()
+                && let Some(mime_ext) = self.mime_type().and_then(mime2ext)
+            {
+                path.set_extension(mime_ext);
             }
             path.file_name()
                 .unwrap_or(path.as_os_str())
@@ -337,10 +337,11 @@ impl AssetCollector {
             return None;
         }
         let mut file = PathBuf::from(file_string);
-        if !non_aao && file.extension().is_none() {
-            if let Some(ext) = default_extension {
-                file.set_extension(ext);
-            }
+        if !non_aao
+            && file.extension().is_none()
+            && let Some(ext) = default_extension
+        {
+            file.set_extension(ext);
         }
         let file_string = file.to_str().expect("Invalid path encountered");
         let url = if !external.unwrap_or(true) {
