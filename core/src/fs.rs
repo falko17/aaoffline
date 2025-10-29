@@ -27,10 +27,10 @@ impl FileWriter for TokioFsWriter {
         orig: &std::path::Path,
         target: &std::path::Path,
     ) -> Result<(), std::io::Error> {
-        if let Err(e) = tokio::fs::remove_file(target).await {
-            if e.kind() != io::ErrorKind::NotFound {
-                return Err(e);
-            }
+        if let Err(e) = tokio::fs::remove_file(target).await
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            return Err(e);
         }
         tokio::fs::symlink(orig, target).await
     }
@@ -41,10 +41,10 @@ impl FileWriter for TokioFsWriter {
         orig: &std::path::Path,
         target: &std::path::Path,
     ) -> Result<(), std::io::Error> {
-        if let Err(e) = tokio::fs::remove_file(target).await {
-            if e.kind() != io::ErrorKind::NotFound {
-                return Err(e);
-            }
+        if let Err(e) = tokio::fs::remove_file(target).await
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            return Err(e);
         }
         tokio::fs::symlink_file(orig, target).await
     }

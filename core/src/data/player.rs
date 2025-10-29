@@ -27,17 +27,17 @@ use super::site::SiteData;
 ///
 /// Code adapted from <https://stackoverflow.com/a/54118457>.
 fn merge(a: &mut Value, b: Value) {
-    if let Value::Object(a) = a {
-        if let Value::Object(b) = b {
-            for (k, v) in b {
-                // Keep entries that are not in b undisturbed.
-                if !v.is_null() {
-                    merge(a.entry(k).or_insert(Value::Null), v);
-                }
+    if let Value::Object(a) = a
+        && let Value::Object(b) = b
+    {
+        for (k, v) in b {
+            // Keep entries that are not in b undisturbed.
+            if !v.is_null() {
+                merge(a.entry(k).or_insert(Value::Null), v);
             }
-
-            return;
         }
+
+        return;
     }
 
     *a = b;

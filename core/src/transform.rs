@@ -80,13 +80,13 @@ pub(crate) mod php {
         /// Outputs a warning if the expected byte range of this block does not match the actual range
         /// of the given [other] block.
         fn expect_match(&self, other: &FoundPhpBlock) {
-            if let Some(Range { start, end }) = self.range {
-                if (other.start, other.end) != (start, end) {
-                    warn!(
-                        "Expected PHP block {} to be at character range ({start}–{end}), but was at ({}–{}). {UPDATE_MESSAGE}",
-                        self.id, other.start, other.end
-                    );
-                }
+            if let Some(Range { start, end }) = self.range
+                && (other.start, other.end) != (start, end)
+            {
+                warn!(
+                    "Expected PHP block {} to be at character range ({start}–{end}), but was at ({}–{}). {UPDATE_MESSAGE}",
+                    self.id, other.start, other.end
+                );
             }
         }
 

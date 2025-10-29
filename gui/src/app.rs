@@ -84,7 +84,7 @@ impl AaofflineApp {
         match self.args.clone().try_into() {
             Ok(args) => self.messenger.run(args),
             Err(e) => error!("{e}"),
-        };
+        }
     }
 
     fn handle_messages(&mut self) {
