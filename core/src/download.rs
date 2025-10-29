@@ -210,6 +210,8 @@ enum JsonSource {
     DefaultSprites(String, i64, String),
     /// A psyche-lock file. The inner value represents the filename.
     PsycheLock(String),
+    /// A background for the "point to an area" action. The inner value represents the case ID.
+    PointArea(u32),
 }
 
 impl JsonReference {
@@ -624,6 +626,8 @@ impl<'a> AssetDownloader<'a> {
             Self::get_used_default_places(&mut site_data.default_data.default_places, &used_places);
         self.collect_places(used_default_places, data, paths, case_id)?;
 
+        self.collect_point_areas(data, case_id)?;
+
         self.collect_popups(data, paths, case_id)?;
 
         self.collect_music(data, paths, case_id)?;
@@ -798,6 +802,46 @@ impl<'a> AssetDownloader<'a> {
             paths,
             &JsonReference::new(JsonSource::DefaultPlaces, String::new()),
         )?;
+        Ok(())
+    }
+
+    /// Collects the point area backgrounds used in the case.
+    fn collect_point_areas(
+        &mut self,
+        data: &mut serde_json::Map<String, Value>,
+        case_id: u32,
+    ) -> Result<()> {
+        for (i, frame) in data["frames"]
+            .as_array_mut()
+            .expect("frames must be array")
+            .iter_mut()
+            .enumerate()
+        {
+            if let Some(background) = frame
+                .as_object_mut()
+                .iter_mut()
+                .filter(|x| x["action_name"].as_str().is_some_and(|y| y == "PointArea"))
+                .filter_map(|x| x["action_parameters"].as_object_mut())
+                .filter_map(|x| x["global"].as_object_mut())
+                .filter_map(|x| x["background"].as_str())
+                .filter_map(|x| x.split_once("val="))
+                .map(|x| x.1)
+                .find(|x| x.starts_with("http") || x.starts_with('/'))
+            {
+                // The format of this value is `val=URLHERE`.
+                self.collector.collect_download(
+                    &Value::String(background.to_string()),
+                    None,
+                    Some(background.starts_with("http")),
+                    None,
+                    JsonReference::new(
+                        JsonSource::PointArea(case_id),
+                        format!("/frames/{i}/action_parameters/global/background"),
+                    ),
+                    false,
+                );
+            }
+        }
         Ok(())
     }
 
@@ -1100,6 +1144,17 @@ impl<'a> AssetDownloader<'a> {
                         .default_data
                         .psyche_lock_urls
                         .insert(name.clone(), path);
+                }
+                JsonSource::PointArea(case_id) => {
+                    let data = &mut case_map
+                        .get_mut(case_id)
+                        .expect("case with ID must be present")
+                        .case_data;
+                    // We now need to modify the pointee to contain the new URL,
+                    // but need to prepend `val=` in accordance with AAOnline's format.
+                    *data
+                        .pointer_mut(&json_ref.pointer)
+                        .expect("pointer must be valid") = Value::String(format!("val={path}"));
                 }
             }
         }
