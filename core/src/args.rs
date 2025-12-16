@@ -52,6 +52,9 @@ pub struct Args {
     /// How many concurrent downloads to use.
     pub concurrent_downloads: usize,
 
+    /// How to handle cases in a sequence that aren't accessible.
+    pub sequence_error_handling: SequenceErrorHandling,
+
     /// How many times to retry downloads if they fail.
     ///
     /// Note that this is in addition to the first try, so a value of one will lead to two download
@@ -95,7 +98,7 @@ pub struct Args {
 }
 
 /// How to handle insecure HTTP requests.
-#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Default, PartialEq, Eq)]
 pub enum HttpHandling {
     /// Fail when an insecure HTTP request is encountered.
     Disallow,
@@ -109,7 +112,7 @@ pub enum HttpHandling {
 }
 
 /// Whether to download every case in a sequence if the given case is part of one.
-#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Default, PartialEq, Eq)]
 pub enum DownloadSequence {
     /// Automatically download every case in the sequence.
     Every,
@@ -120,8 +123,20 @@ pub enum DownloadSequence {
     Ask,
 }
 
+/// Whether to abort the download when a case in a sequence is not found.
+#[derive(Debug, Clone, Copy, Serialize, Default, PartialEq, Eq)]
+pub enum SequenceErrorHandling {
+    /// Abort the download.
+    Abort,
+    /// Continue with the other, existing cases in the sequence.
+    Continue,
+    /// Ask first (if in an interactive terminal, otherwise abort).
+    #[default]
+    Ask,
+}
+
 /// Whether to apply any userscripts to the downloaded case.
-#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Default, PartialEq, Eq, Hash)]
 pub enum Userscripts {
     /// Apply all userscripts.
     All,

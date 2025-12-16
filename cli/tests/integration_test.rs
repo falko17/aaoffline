@@ -423,7 +423,7 @@ fn test_output_format(
     #[values(true, false)] existing_dir: bool,
 ) {
     let mut cmd = Command::cargo_bin("aaoffline").unwrap();
-    let testpath = tempdir().unwrap().into_path().join("test");
+    let testpath = tempdir().unwrap().keep().join("test");
     if existing_dir {
         std::fs::create_dir(&testpath).unwrap();
     }

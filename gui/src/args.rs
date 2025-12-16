@@ -1,6 +1,6 @@
 use std::{collections::HashSet, path::PathBuf};
 
-use aaoffline::args::{Args, DownloadSequence, HttpHandling, Userscripts};
+use aaoffline::args::{Args, DownloadSequence, HttpHandling, SequenceErrorHandling, Userscripts};
 use egui::{Button, Checkbox, CollapsingHeader, Slider, TextEdit, Widget, vec2};
 use egui_form::{
     Form, FormField,
@@ -59,6 +59,9 @@ pub(crate) struct GuiArgs {
     #[garde(range(min = 1))]
     pub(crate) concurrent_downloads: usize,
 
+    /// How to handle cases in a sequence that aren't accessible.
+    pub sequence_error_handling: SequenceErrorHandling,
+
     /// How many times to retry downloads if they fail.
     ///
     /// Note that this is in addition to the first try, so a value of one will lead to two download
@@ -115,6 +118,7 @@ impl GuiArgs {
             disable_html5_audio: false,
             disable_photobucket_fix: false,
             sequence: DownloadSequence::Every,
+            sequence_error_handling: SequenceErrorHandling::Continue,
             ..Default::default()
         }
     }
@@ -221,6 +225,27 @@ WARNING: Browsers may not like HTML files very much that are multiple dozens of 
                 ).on_hover_text("Only download the cases that are passed.");
             });
         });
+
+        if self.sequence != DownloadSequence::Single {
+            ui.group(|ui| {
+                ui.label("Sequence error handling")
+                    .on_hover_text("What to do if a case in a sequence isn't accessible.");
+                ui.horizontal_wrapped(|ui| {
+                    ui.radio_value(
+                        &mut self.sequence_error_handling,
+                        SequenceErrorHandling::Continue,
+                        "Continue",
+                    )
+                    .on_hover_text("Ignore the error and download the other cases.");
+                    ui.radio_value(
+                        &mut self.sequence_error_handling,
+                        SequenceErrorHandling::Abort,
+                        "Abort",
+                    )
+                    .on_hover_text("Stop the entire download.");
+                });
+            });
+        }
 
         ui.group(|ui| {
             ui.label("Apply userscripts");
@@ -409,6 +434,7 @@ impl TryFrom<GuiArgs> for Args {
             disable_photobucket_fix: value.disable_photobucket_fix,
             proxy: Some(value.proxy).filter(|x| !x.is_empty()),
             log_level: LevelFilter::Debug,
+            sequence_error_handling: value.sequence_error_handling,
         })
     }
 }
