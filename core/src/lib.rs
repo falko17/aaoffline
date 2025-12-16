@@ -38,6 +38,8 @@ use reqwest_retry::RetryTransientMiddleware;
 #[cfg(not(target_arch = "wasm32"))]
 use reqwest_retry::policies::ExponentialBackoff;
 
+use crate::args::SequenceErrorHandling;
+
 /// The total number of steps that aaoffline needs to go through.
 pub const MAX_STEPS: u8 = 8;
 
@@ -197,7 +199,7 @@ impl MainContext {
             }
         });
 
-        let http_handling = args.http_handling.clone();
+        let http_handling = args.http_handling;
         let mut builder = Client::builder().user_agent("aaoffline");
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -304,12 +306,15 @@ impl MainContext {
         let ctx = self.global_ctx.take().expect("context must exist here");
         let client = &ctx.client;
         let concurrent = ctx.args.concurrent_downloads;
-        //let pb = self.pb.take().unwrap();
+        let mut abort_behavior = ctx.args.sequence_error_handling;
         let pb = self.pb();
         pb.inc(0);
 
         let mut cases: HashSet<_> =
-            Self::download_case_infos_no_sequence(&self.case_ids, client, concurrent, pb).await?;
+            Self::download_case_infos_no_sequence(&self.case_ids, client, concurrent, pb)
+                .await
+                .into_iter()
+                .collect::<Result<HashSet<_>>>()?;
 
         let additional = &cases
             .iter()
@@ -323,10 +328,31 @@ impl MainContext {
             "Retrieving case information for additional sequence cases...",
             &ctx,
         );
-        cases.extend(
-            Self::download_case_infos_no_sequence(additional, client, concurrent, self.pb())
-                .await?,
-        );
+        let additional_cases =
+            Self::download_case_infos_no_sequence(additional, client, concurrent, self.pb()).await;
+        for case in additional_cases {
+            match (case, &abort_behavior) {
+                (Ok(new_case), _) => {
+                    cases.insert(new_case);
+                }
+                (Err(e), args::SequenceErrorHandling::Abort) => {
+                    return Err(anyhow!(
+                        "Aborting due to error retrieving case in sequence: {e}"
+                    ));
+                }
+                (Err(e), args::SequenceErrorHandling::Continue) => {
+                    warn!("Could not retrieve case in sequence: {e}\nContinuing anyway.");
+                }
+                (Err(e), args::SequenceErrorHandling::Ask) => match self.ask_abort(&e) {
+                    Ok(()) => {
+                        warn!("Could not retrieve case in sequence: {e}\nContinuing anyway.");
+                        abort_behavior = SequenceErrorHandling::Continue
+                    }
+                    Err(e) => return Err(e),
+                },
+            }
+        }
+
         // And then we put it back.
         self.global_ctx = Some(ctx);
 
@@ -345,14 +371,12 @@ impl MainContext {
         client: &ClientWithMiddleware,
         concurrent_conns: usize,
         pb: &dyn ProgressReporter,
-    ) -> Result<HashSet<Case>> {
+    ) -> Vec<Result<Case>> {
         futures::stream::iter(ids.iter().map(|x| Case::retrieve_from_id(*x, client)))
             .buffer_unordered(concurrent_conns)
             .inspect(|_| pb.inc(1))
             .collect::<Vec<_>>()
             .await
-            .into_iter()
-            .collect()
     }
 
     /// Retrieves additional cases that should be downloaded if the given [case] is part of a sequence.
@@ -398,6 +422,36 @@ impl MainContext {
         } else {
             debug!("stdin is not a terminal, not asking whether to download sequence.");
             Ok(false)
+        }
+    }
+
+    /// Asks the user whether they want to abort downloading the sequence after an error.
+    fn ask_abort(&self, e: &anyhow::Error) -> Result<()> {
+        if stdin().is_terminal() {
+            let result = self.pb().suspend(&|| {
+                warn!("An error occurred while retrieving a case in a sequence: {e}");
+                let result = self
+                    .dialog
+                    .write()
+                    .unwrap()
+                    .confirm("Do you want to continue downloading the other cases even if some of them aren't accessible?", true);
+                println!();
+                result
+            });
+            if let Some(choice) = result {
+                if choice {
+                    Ok(())
+                } else {
+                    Err(anyhow!("Then we'll stop here."))
+                }
+            } else {
+                Err(anyhow!("Download cancelled per user request."))
+            }
+        } else {
+            debug!("stdin is not a terminal, not asking whether to abort on sequence error.");
+            Err(anyhow!(
+                "Aborting due to error retrieving case in sequence: {e}"
+            ))
         }
     }
 

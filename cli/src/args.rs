@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use aaoffline::args::{Args, DownloadSequence, HttpHandling, Userscripts};
+use aaoffline::args::{Args, DownloadSequence, HttpHandling, SequenceErrorHandling, Userscripts};
 use clap::{Parser, ValueEnum, command};
 #[cfg(debug_assertions)]
 use clap_verbosity_flag::DebugLevel;
@@ -75,6 +75,10 @@ pub(crate) struct CliArgs {
     #[arg(short('j'), long, default_value_t = 5)]
     pub(crate) concurrent_downloads: usize,
 
+    /// How to handle cases in a sequence that aren't accessible.
+    #[arg(long, value_enum, default_value_t)]
+    pub sequence_error_handling: CliSequenceErrorHandling,
+
     /// How many times to retry downloads if they fail.
     ///
     /// Note that this is in addition to the first try, so a value of one will lead to two download
@@ -131,7 +135,7 @@ pub(crate) struct CliArgs {
 }
 
 /// How to handle insecure HTTP requests.
-#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, Serialize, Default, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum CliHttpHandling {
     /// Fail when an insecure HTTP request is encountered.
@@ -146,7 +150,7 @@ pub(crate) enum CliHttpHandling {
 }
 
 /// Whether to download every case in a sequence if the given case is part of one.
-#[derive(Debug, Clone, Serialize, Default, ValueEnum)]
+#[derive(Debug, Clone, Copy, Serialize, Default, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum CliDownloadSequence {
     /// Automatically download every case in the sequence.
@@ -158,8 +162,20 @@ pub(crate) enum CliDownloadSequence {
     Ask,
 }
 
+/// Whether to abort the download when a case in a sequence is not found.
+#[derive(Debug, Clone, Copy, Serialize, Default, ValueEnum)]
+pub(crate) enum CliSequenceErrorHandling {
+    /// Abort the download.
+    Abort,
+    /// Continue with the other, existing cases in the sequence.
+    Continue,
+    /// Ask first (if in an interactive terminal, otherwise abort).
+    #[default]
+    Ask,
+}
+
 /// Whether to apply any userscripts to the downloaded case.
-#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, Serialize, Default, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum CliUserscripts {
     /// Apply all userscripts.
@@ -201,6 +217,16 @@ impl From<CliDownloadSequence> for DownloadSequence {
     }
 }
 
+impl From<CliSequenceErrorHandling> for SequenceErrorHandling {
+    fn from(value: CliSequenceErrorHandling) -> Self {
+        match value {
+            CliSequenceErrorHandling::Abort => SequenceErrorHandling::Abort,
+            CliSequenceErrorHandling::Continue => SequenceErrorHandling::Continue,
+            CliSequenceErrorHandling::Ask => SequenceErrorHandling::Ask,
+        }
+    }
+}
+
 impl From<CliUserscripts> for Userscripts {
     fn from(value: CliUserscripts) -> Self {
         match value {
@@ -235,6 +261,7 @@ impl From<CliArgs> for Args {
             disable_photobucket_fix: value.disable_photobucket_fix,
             proxy: value.proxy,
             log_level: value.verbose.log_level_filter(),
+            sequence_error_handling: value.sequence_error_handling.into(),
         }
     }
 }
