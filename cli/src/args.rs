@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use aaoffline::args::{Args, DownloadSequence, HttpHandling, SequenceErrorHandling, Userscripts};
-use clap::{Parser, ValueEnum, command};
+use clap::{Parser, ValueEnum};
 #[cfg(debug_assertions)]
 use clap_verbosity_flag::DebugLevel;
 #[cfg(not(debug_assertions))]

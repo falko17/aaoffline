@@ -751,7 +751,7 @@ impl MainContext {
                 &output_path.display()
             )
         } else {
-            let output = if self.ctx().output == PathBuf::from(".") {
+            let output = if self.ctx().output == Path::new(".") {
                 "current directory"
             } else {
                 &format!("directory \"{}\"", &self.ctx().output.display().to_string())
