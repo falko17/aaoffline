@@ -43,6 +43,8 @@ const SEQUENCE_TEST: &str = "148564";
 const DRAGON: &str = "83543";
 /// This one has a custom PointArea, which caused issue #18:
 const AAOFFLINE_TEST: &str = "148576";
+/// This one contains the string `");` (without backticks) in the JSON trial data, which caused issue #24:
+const DEBIAN_INIT: &str = "71715";
 
 // Cases used in multi-download test:
 const MULTI_CASES: [&str; 4] = [
@@ -95,7 +97,8 @@ fn example_cases(
         BROKEN_COMMANDMENTS,
         CASCADE_THEATER_ASCENSION,
         DRAGON,
-        AAOFFLINE_TEST
+        AAOFFLINE_TEST,
+        DEBIAN_INIT
     )]
     case: &str,
 ) {
