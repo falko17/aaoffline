@@ -1200,7 +1200,7 @@ impl<'a> AssetDownloader<'a> {
             .map(|x| (id_profiles[&x.0], -x.1))
             .unique()
             .collect_vec();
-        trace!("{:?}", used_default_sprites);
+        trace!("Used default sprites: {:?}", used_default_sprites);
         used_default_sprites
     }
 }

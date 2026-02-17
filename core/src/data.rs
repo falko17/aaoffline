@@ -32,7 +32,7 @@ fn retrieve_escaped_json<T: DeserializeOwned>(regex: &Regex, text: &str) -> Resu
         .replace(r#"\""#, "\"")
         .replace(r"\'", "'")
         .replace(r"\/", "/");
-    trace!("{extracted}");
+    trace!("Extracted: {extracted}");
     serde_json::from_str(&extracted).context("Could not parse trial data. The script needs to be updated to be able to handle this trial.")
 }
 
