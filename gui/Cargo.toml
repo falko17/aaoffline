@@ -12,23 +12,23 @@ name = "aaoffline-gui"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.97"
-colored = { version = "3.0.0", features = ["no-color"] }
-eframe = "0.33.0"
-egui = "0.33.0"
+anyhow = "1.0.101"
+colored = { version = "3.1.1", features = ["no-color"] }
+eframe = "0.33.3"
+egui = "0.33.3"
 egui_form = { version = "0.7.0", features = ["validator_garde"] }
-egui_logger = "0.9.0"
-garde = { version = "0.22.0", features = ["derive"] }
-log = "0.4.26"
-rfd = "0.16.0"
+egui_logger = "0.9.2"
+garde = { version = "0.22.1", features = ["derive"] }
+log = "0.4.29"
+rfd = "0.17.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 aaoffline = { path = "../core", features = ["fs"] }
-tokio = { version = "1.44.0", features = ["rt-multi-thread"] }
+tokio = { version = "1.49.0", features = ["rt-multi-thread"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 aaoffline = { path = "../core" }
-tokio = { version = "1.44.0", features = ["rt"] }
+tokio = { version = "1.49.0", features = ["rt"] }
 
 [lints]
 workspace = true
