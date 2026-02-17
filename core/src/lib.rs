@@ -19,7 +19,7 @@ use colored::Colorize;
 use data::case::{Case, Sequence};
 use data::player::Player;
 use download::AssetDownloader;
-use futures::{StreamExt, TryFutureExt};
+use futures_util::{StreamExt, TryFutureExt};
 use itertools::Itertools;
 use log::{Level, debug, info, warn};
 use middleware::AaofflineMiddleware;
@@ -372,7 +372,7 @@ impl MainContext {
         concurrent_conns: usize,
         pb: &dyn ProgressReporter,
     ) -> Vec<Result<Case>> {
-        futures::stream::iter(ids.iter().map(|x| Case::retrieve_from_id(*x, client)))
+        futures_util::stream::iter(ids.iter().map(|x| Case::retrieve_from_id(*x, client)))
             .buffer_unordered(concurrent_conns)
             .inspect(|_| pb.inc(1))
             .collect::<Vec<_>>()

@@ -18,3 +18,4 @@ too_many_arguments = "allow"
 codegen-units = 1
 lto = true
 opt-level = "s"
+strip = "debuginfo"
