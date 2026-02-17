@@ -13,27 +13,27 @@ path = "src/main.rs"
 
 [dependencies]
 aaoffline = { path = "../core", features = ["fs"] }
-anyhow = { version = "1.0.97", features = ["backtrace"] }
+anyhow = { version = "1.0.101", features = ["backtrace"] }
 async-trait = "0.1.89"
-clap = { version = "4.5.53", features = ["derive"] }
+clap = { version = "4.5.59", features = ["derive"] }
 dialoguer = "0.12.0"
-env_logger = "0.11.8"
+env_logger = "0.11.9"
 log = "0.4.29"
-futures = "0.3.31"
-human-panic = "2.0.4"
-tokio = { version = "1.48.0", features = ["full"] }
+futures = "0.3.32"
+human-panic = "2.0.6"
+tokio = { version = "1.49.0", features = ["full"] }
 clap-verbosity-flag = "3.0.4"
 serde = "1.0.228"
-indicatif = "0.18.3"
-colored = "3.0.0"
+indicatif = "0.18.4"
+colored = "3.1.1"
 
 [dev-dependencies]
-assert_cmd = "2.0.16"
-glob = "0.3.2"
-headless_chrome = "1.0.17"
+assert_cmd = "2.1.2"
+glob = "0.3.3"
+headless_chrome = "1.0.21"
 itertools = "0.14.0"
 maplit = "1.0.2"
-regex = "1.11.1"
-rstest = "0.26.0"
+regex = "1.12.3"
+rstest = "0.26.1"
 rstest_reuse = "0.7.0"
-tempfile = "3.18.0"
+tempfile = "3.25.0"
