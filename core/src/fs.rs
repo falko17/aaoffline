@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::TryFutureExt;
+use futures_util::TryFutureExt;
 use log::warn;
 use tokio::io;
 

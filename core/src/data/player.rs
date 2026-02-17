@@ -8,7 +8,7 @@ use crate::{GlobalContext, ProgressReporter};
 use anyhow::{Context, Result};
 
 use const_format::formatcp;
-use futures::{StreamExt, stream};
+use futures_util::{StreamExt, stream};
 use itertools::Itertools;
 use log::{debug, trace, warn};
 
