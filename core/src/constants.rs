@@ -6,7 +6,10 @@ use const_format::formatcp;
 pub(crate) mod re {
     use std::sync::LazyLock;
 
+    use super::formatcp;
     use regex::Regex;
+
+    const JSON_STRING_REGEX: &str = r#"JSON\.parse\("((?:[^"\\]|\\.)*)"\)"#;
 
     pub(crate) static PHP_REGEX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?s)<\?php(.*?)\?>").unwrap());
@@ -19,15 +22,24 @@ pub(crate) mod re {
     });
 
     pub(crate) static TRIAL_INFORMATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?s)var trial_information(?: = JSON\.parse\("(.*?)"\))?;"#).unwrap()
+        Regex::new(formatcp!(
+            r#"(?s)var trial_information(?: = {JSON_STRING_REGEX})?;"#
+        ))
+        .unwrap()
     });
 
     pub(crate) static TRIAL_DATA_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?s)var initial_trial_data = JSON\.parse\("(.*?)"\);"#).unwrap()
+        Regex::new(formatcp!(
+            r#"(?s)var initial_trial_data = {JSON_STRING_REGEX};"#
+        ))
+        .unwrap()
     });
 
     pub(crate) static DEFAULT_PROFILES_STARTUP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?s)var default_profiles_startup = JSON\.parse\("(.*?)"\);"#).unwrap()
+        Regex::new(formatcp!(
+            r#"(?s)var default_profiles_startup = {JSON_STRING_REGEX};"#
+        ))
+        .unwrap()
     });
 
     pub(crate) static DEFAULT_PLACES_REGEX: LazyLock<Regex> =
