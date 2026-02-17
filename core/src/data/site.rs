@@ -173,17 +173,16 @@ impl SitePaths {
             .context(formatcp!("{AAONLINE_BASE} site configuration seems to be inaccessible."))?
             .text().await?;
 
-        trace!("{bridge}");
+        trace!("Bridge: {bridge}");
         let config_text = re::CONFIG_REGEX
             .captures(&bridge)
             .context("Bridge script seemingly changed format, this means the script needs to be updated to work with the newest AAO version.")?
             .get(1)
             .expect("No captured content in site configuration")
             .as_str();
-        trace!("{}", config_text);
+        trace!("Site config: {config_text}");
         let config: Self = serde_json::from_str(config_text)
             .context("Could not parse site configuration. The script needs to be updated.")?;
-        trace!("{:?}", config);
 
         Ok(config)
     }

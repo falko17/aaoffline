@@ -173,8 +173,8 @@ impl Case {
             .get_or_insert(String::from("[UNKNOWN]"));
 
         let case_data = super::retrieve_escaped_json(&re::TRIAL_DATA_REGEX, &case_script)?;
-        debug!("{:?}", case_information);
-        trace!("{:?}", case_data);
+        debug!("Case information: {:?}", case_information);
+        trace!("Case data: {:?}", case_data);
 
         Ok(Case {
             case_information,
@@ -184,7 +184,7 @@ impl Case {
 
     /// Returns a list of character and sprite IDs for sprites used in this case.
     pub(crate) fn get_used_sprites(&self) -> Vec<(i64, i64)> {
-        trace!("{}", self.case_data);
+        trace!("Case data: {}", self.case_data);
         // We are filtering out numbers here because for some reason, the arrays always
         // contain a "0: 0" element.
         self.case_data

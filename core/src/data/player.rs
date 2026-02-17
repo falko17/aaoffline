@@ -561,7 +561,7 @@ impl Player {
         let func_end = lang.get(0).unwrap().end();
         let group = lang.get(1).unwrap();
         let callback = lang.get(2).unwrap();
-        trace!("{}", &group.as_str());
+        trace!("Language group: {}", &group.as_str());
         let lang_files =
             serde_json::from_str::<Value>(&format!("[{}]", &group.as_str().replace('\'', "\"")))?;
         let lang_files: Vec<_> = lang_files
