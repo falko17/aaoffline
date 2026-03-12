@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use aaoffline::args::{Args, DownloadSequence, HttpHandling, SequenceErrorHandling, Userscripts};
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory as _, Parser, ValueEnum, error::ErrorKind};
 #[cfg(debug_assertions)]
 use clap_verbosity_flag::DebugLevel;
 #[cfg(not(debug_assertions))]
@@ -18,7 +18,7 @@ use serde::Serialize;
 pub(crate) struct CliArgs {
     /// The URL to the case, or its ID. May be passed multiple times.
     #[arg(required=true, num_args = 1.., value_parser = Args::accept_case)]
-    pub(crate) cases: Vec<u32>,
+    pub(crate) cases: Vec<(u32, Option<String>)>,
 
     /// The output directory (or filename, if `-1` was used) for the case.
     ///
@@ -123,6 +123,13 @@ pub(crate) struct CliArgs {
     /// `https://example.org/sample` would become `https://example.com/?proxy=https://example.org/sample`.
     #[arg(long)]
     pub(crate) proxy: Option<String>,
+
+    /// The base URL to use for Ace Attorney Online.
+    ///
+    /// This can be useful for testing with a local instance of AAO, for example.
+    /// If not set, will default to the official AAO URL (aaonline.fr).
+    #[arg(long)]
+    pub base_url: Option<String>,
 
     #[cfg(not(debug_assertions))]
     #[command(flatten)]
@@ -240,10 +247,16 @@ impl From<CliUserscripts> for Userscripts {
     }
 }
 
-impl From<CliArgs> for Args {
-    fn from(value: CliArgs) -> Self {
-        Args {
-            cases: value.cases,
+impl TryFrom<CliArgs> for Args {
+    type Error = clap::Error;
+    fn try_from(value: CliArgs) -> Result<Self, Self::Error> {
+        let (base_url, base_url_warning) =
+            Args::resolve_base_url(value.base_url.as_deref(), &value.cases)
+                .map_err(|e| CliArgs::command().error(ErrorKind::ValueValidation, e))?;
+        let warnings: Vec<String> = base_url_warning.into_iter().collect();
+
+        Ok(Args {
+            cases: value.cases.into_iter().map(|(id, _)| id).collect(),
             output: value.output,
             player_version: value.player_version,
             language: value.language,
@@ -262,6 +275,8 @@ impl From<CliArgs> for Args {
             proxy: value.proxy,
             log_level: value.verbose.log_level_filter(),
             sequence_error_handling: value.sequence_error_handling.into(),
-        }
+            base_url,
+            warnings,
+        })
     }
 }

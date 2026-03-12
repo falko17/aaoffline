@@ -16,7 +16,7 @@ mod io;
 #[tokio::main]
 async fn main() -> Result<()> {
     setup_panic!();
-    let args: Args = CliArgs::parse().into();
+    let args: Args = CliArgs::parse().try_into()?;
     Userscripts::validate_combination(&args.with_userscripts)
         .map_err(|x| CliArgs::command().error(ErrorKind::ArgumentConflict, x))?;
     env_logger::builder()

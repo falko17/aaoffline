@@ -6,11 +6,9 @@ use chrono::{DateTime, Utc};
 
 use colored::Colorize;
 
-use const_format::formatcp;
 use log::{debug, trace};
 
 use anyhow::anyhow;
-use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::TimestampSeconds;
@@ -19,7 +17,6 @@ use serde_with::formats::Flexible;
 use std::collections::HashSet;
 use std::fmt::Display;
 
-use crate::constants::AAONLINE_BASE;
 use crate::constants::re;
 use crate::data::RegexNotMatched;
 
@@ -144,17 +141,17 @@ impl Case {
     /// Retrieves a case using the given [`case_id`] from Ace Attorney Online.
     pub(crate) async fn retrieve_from_id(
         case_id: u32,
-        client: &ClientWithMiddleware,
+        client: &crate::AaofflineClient,
     ) -> Result<Case> {
-        let case_script = client.get(format!(
-        "{AAONLINE_BASE}/trial.js.php?trial_id={case_id}",
-        )).send().await
-        .context(
-            formatcp!("Could not download case data from {AAONLINE_BASE}. Please check your internet connection.")
-        )?
-        .error_for_status()
-        .context("Case data seems to be inaccessible.")?
-        .text().await?;
+        let case_script = client
+            .get(&format!("trial.js.php?trial_id={case_id}",))
+            .send()
+            .await
+            .context("Could not download case data. Please check your internet connection.")?
+            .error_for_status()
+            .context("Case data seems to be inaccessible.")?
+            .text()
+            .await?;
 
         let mut case_information: CaseInformation =
             super::retrieve_escaped_json(&re::TRIAL_INFORMATION_REGEX, &case_script).map_err(

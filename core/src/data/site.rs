@@ -1,16 +1,15 @@
 //! Contains data models related to the configuration of Ace Attorney Online.
 
 use anyhow::{Context, Result, anyhow};
-use const_format::formatcp;
 use log::trace;
 
-use reqwest_middleware::ClientWithMiddleware;
+use crate::AaofflineClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use std::collections::{HashMap, HashSet};
 
-use crate::constants::{AAONLINE_BASE, BRIDGE_URL, re};
+use crate::constants::{BRIDGE_URL, re};
 
 /// Default data for the Ace Attorney Online player.
 ///
@@ -118,10 +117,7 @@ impl SitePaths {
 
     /// Returns the default icon for the site.
     pub(crate) fn default_icon(&self) -> String {
-        format!(
-            "{AAONLINE_BASE}/{}/{}/Inconnu.png",
-            self.picture_dir, self.icon_subdir
-        )
+        format!("{}/{}/Inconnu.png", self.picture_dir, self.icon_subdir)
     }
 
     /// Returns the path for the default evidence on Ace Attorney Online.
@@ -162,16 +158,20 @@ impl SitePaths {
     }
 
     /// Retrieves the site paths from the `bridge.js.php` script.
-    pub(crate) async fn retrieve_from_bridge(client: &ClientWithMiddleware) -> Result<Self> {
+    pub(crate) async fn retrieve_from_bridge(client: &AaofflineClient) -> Result<Self> {
         // We only need to retrieve the bridge script because we need to know the configuration of
         // aaonline.fr. We don't need it for the JS module system, as we'll handle that manually.
-        let bridge = client.get(BRIDGE_URL).send().await
+        let bridge = client
+            .get(BRIDGE_URL)
+            .send()
+            .await
             .context(
-                "Could not download site configuration from {AAONLINE_BASE}. Please check your internet connection."
+                "Could not download site configuration. Please check your internet connection.",
             )?
             .error_for_status()
-            .context(formatcp!("{AAONLINE_BASE} site configuration seems to be inaccessible."))?
-            .text().await?;
+            .context("Site configuration seems to be inaccessible.")?
+            .text()
+            .await?;
 
         trace!("Bridge: {bridge}");
         let config_text = re::CONFIG_REGEX
@@ -202,7 +202,7 @@ impl SiteData {
     /// as the default module.
     pub(crate) async fn from_site_data(
         default_mod: &str,
-        client: &ClientWithMiddleware,
+        client: &AaofflineClient,
     ) -> Result<Self> {
         let site_paths = SitePaths::retrieve_from_bridge(client).await?;
         let default_data = DefaultData::from_default_module(default_mod)?;

@@ -3,11 +3,12 @@
 use anyhow::Result;
 use itertools::Itertools;
 use log::LevelFilter;
+use reqwest::Url;
 use serde::Serialize;
 
 use std::path::PathBuf;
 
-use crate::constants::re;
+use crate::constants::re::{self, AAONLINE_MAIN_HOST};
 
 /// Arguments that configure how aaoffline runs.
 #[derive(Debug, Clone)]
@@ -93,8 +94,18 @@ pub struct Args {
     /// `https://example.org/sample` would become `https://example.com/?proxy=https://example.org/sample`.
     pub proxy: Option<String>,
 
+    /// The base URL to use for Ace Attorney Online.
+    ///
+    /// This can be useful for testing with a local instance of AAO, for example.
+    pub base_url: Url,
+
     /// The minimum level messages have to have to be logged.
     pub log_level: LevelFilter,
+
+    /// Warnings that were generated during argument parsing, before the logger was initialized.
+    ///
+    /// These should be logged once the logger is ready.
+    pub warnings: Vec<String>,
 }
 
 /// How to handle insecure HTTP requests.
@@ -205,21 +216,73 @@ impl Userscripts {
 }
 
 impl Args {
-    /// Parses the given [case] into its ID.
-    pub fn accept_case(case: &str) -> Result<u32, String> {
+    /// Parses the given [case] into its ID and host.
+    pub fn accept_case(case: &str) -> Result<(u32, Option<String>), String> {
         if let Ok(id) = case.parse::<u32>() {
-            Ok(id)
+            Ok((id, None))
         } else if let Some(captures) = re::CASE_REGEX.captures(case) {
-            captures
+            let host: &str = captures
                 .get(1)
+                .expect("No captured content in case URL")
+                .as_str();
+            let case: u32 = captures
+                .get(2)
                 .expect("No captured content in case URL")
                 .as_str()
                 .parse()
-                .map_err(|_| "Case ID in given URL is not a valid number!".to_string())
+                .map_err(|_| "Case ID in given URL is not a valid number!".to_string())?;
+
+            let host = if re::AAONLINE_HOST_REGEX.is_match(host) {
+                AAONLINE_MAIN_HOST
+            } else {
+                host
+            };
+
+            Ok((case, Some(host.to_string())))
         } else {
             Err(format!(
                 "Could not parse case ID from input \"{case}\". Please provide a valid case URL or ID."
             ))
+        }
+    }
+
+    /// Resolves the base URL from the given [explicit_base_url] override and the [cases].
+    ///
+    /// If an explicit base URL is given, it takes priority but a warning is returned if it
+    /// differs from the URL inferred from the case arguments. If no explicit URL is given,
+    /// the URL is inferred from the cases (or defaults to aaonline.fr).
+    ///
+    /// Returns the resolved URL and an optional warning message for the caller to display.
+    pub fn resolve_base_url(
+        explicit_base_url: Option<&str>,
+        cases: &[(u32, Option<String>)],
+    ) -> Result<(Url, Option<String>), String> {
+        let inferred_base = if let Some(first_host) = cases.iter().find_map(|x| x.1.as_ref()) {
+            if let Some((_, Some(other_host))) = cases
+                .iter()
+                .find(|(_, host)| host.as_ref() != Some(first_host))
+            {
+                return Err(format!(
+                    "All cases must be from the same host, but both \"{other_host}\" and \"{first_host}\" are present"
+                ));
+            }
+            first_host.as_str()
+        } else {
+            AAONLINE_MAIN_HOST
+        };
+        let inferred = Url::parse(inferred_base)
+            .map_err(|e| format!("Invalid base URL \"{inferred_base}\": {e}"))?;
+
+        if let Some(url) = explicit_base_url {
+            let parsed = Url::parse(url).map_err(|e| format!("Invalid base URL \"{url}\": {e}"))?;
+            let warning = (parsed != inferred).then(|| {
+                format!(
+                    "Specified base URL \"{parsed}\" does not match the URL inferred from case arguments (\"{inferred}\"). Using the specified base URL."
+                )
+            });
+            Ok((parsed, warning))
+        } else {
+            Ok((inferred, None))
         }
     }
 }
