@@ -23,7 +23,7 @@ use futures_util::{StreamExt, TryFutureExt};
 use itertools::Itertools;
 use log::{Level, debug, info, warn};
 use middleware::AaofflineMiddleware;
-use reqwest::Client;
+use reqwest::{Client, Url};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -43,6 +43,30 @@ use crate::args::SequenceErrorHandling;
 /// The total number of steps that aaoffline needs to go through.
 pub const MAX_STEPS: u8 = 8;
 
+#[derive(Debug)]
+pub(crate) struct AaofflineClient {
+    /// The base URL for Ace Attorney Online, which is used for constructing the URLs for requests.
+    base_url: Url,
+    /// The [reqwest] HTTP client to use for requests.
+    inner: ClientWithMiddleware,
+}
+
+impl AaofflineClient {
+    pub(crate) fn get(&self, url: &str) -> reqwest_middleware::RequestBuilder {
+        let url = if constants::re::AAONLINE_HOST_REGEX.is_match(url) {
+            // If the URL is already a full URL to aaonline, we can just use it as is.
+            url.to_string()
+        } else {
+            // Otherwise, we need to construct the full URL using the base URL.
+            self.base_url
+                .join(url)
+                .expect("URL should be valid")
+                .to_string()
+        };
+        self.inner.get(url)
+    }
+}
+
 /// The global context for the program.
 #[derive(Debug)]
 pub(crate) struct GlobalContext {
@@ -50,8 +74,8 @@ pub(crate) struct GlobalContext {
     args: args::Args,
     /// The output directory for the case.
     output: PathBuf,
-    /// The [reqwest] HTTP client to use for requests.
-    client: ClientWithMiddleware,
+    /// The client for making requests to Ace Attorney Online.
+    client: AaofflineClient,
     /// The [FileWriter] to use for handling files and directories.
     writer: Box<dyn FileWriter + Sync>,
     /// Mapping from case ID to output file.
@@ -185,6 +209,9 @@ impl MainContext {
         reporter: Box<dyn ProgressReporter>,
     ) -> MainContext {
         debug!("Arguments: {args:?}");
+        for warning in &args.warnings {
+            warn!("{warning}");
+        }
         let case_ids = args.cases.clone();
 
         let output = args.output.clone().unwrap_or_else(|| {
@@ -223,7 +250,10 @@ impl MainContext {
                 client_builder.with(RetryTransientMiddleware::new_with_policy(retry_policy));
         }
 
-        let client = client_builder.build();
+        let client = AaofflineClient {
+            base_url: args.base_url.clone(),
+            inner: client_builder.build(),
+        };
         MainContext {
             case_ids,
             pb: reporter,
@@ -368,7 +398,7 @@ impl MainContext {
     /// Downloads the case information for the given [ids], without downloading the sequences.
     async fn download_case_infos_no_sequence(
         ids: &[u32],
-        client: &ClientWithMiddleware,
+        client: &AaofflineClient,
         concurrent_conns: usize,
         pb: &dyn ProgressReporter,
     ) -> Vec<Result<Case>> {

@@ -1,5 +1,6 @@
 //! Contains data structures and methods for downloading case data.
 
+use crate::AaofflineClient;
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
@@ -13,7 +14,6 @@ use mime2ext::mime2ext;
 use regex::Regex;
 use reqwest::Url;
 use reqwest::header::{HeaderMap, HeaderValue};
-use reqwest_middleware::ClientWithMiddleware;
 use sanitize_filename::sanitize;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -26,7 +26,6 @@ use std::string::FromUtf8Error;
 use tokio::sync::OnceCell;
 
 use crate::ProgressReporter;
-use crate::constants::AAONLINE_BASE;
 use crate::constants::re::{CONTENT_DISPOSITION_FILENAME_REGEX, REMOVE_QUERY_PARAMETERS_REGEX};
 use crate::data::case::Case;
 use crate::data::site::{SiteData, SitePaths};
@@ -47,7 +46,7 @@ impl Download {
     pub(crate) async fn retrieve_url(
         url: &str,
         http_handling: &HttpHandling,
-        client: &ClientWithMiddleware,
+        client: &AaofflineClient,
     ) -> Result<Download> {
         // TODO: Proper timeout for download (test with long sequence)
         debug!("Downloading {url}...");
@@ -59,11 +58,8 @@ impl Download {
                     return Err(anyhow!("Blocking insecure HTTP request to {url}."));
                 }
             }
-        } else if url.starts_with("https://") {
-            url.to_string()
         } else {
-            // Assume this is a relative URL.
-            format!("{AAONLINE_BASE}/{}", url.trim_start_matches('/'))
+            url.to_string()
         };
 
         // Actually download the file.
@@ -346,15 +342,13 @@ impl AssetCollector {
         let file_string = file.to_str().expect("Invalid path encountered");
         let url = if !external.unwrap_or(true) {
             &format!(
-                "{AAONLINE_BASE}/{}/{file_string}",
+                "{}/{file_string}",
                 path_components
                     .expect("Non-external path needs path components!")
                     .join("/"),
             )
-        } else if non_aao {
-            file_string
         } else {
-            &format!("{AAONLINE_BASE}/{file_string}")
+            file_string
         };
 
         // Get rid of multiple consecutive slashes.

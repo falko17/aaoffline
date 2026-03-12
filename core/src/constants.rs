@@ -1,12 +1,10 @@
 //! Contains constants, such as regular expressions or strings.
 
-use const_format::formatcp;
-
 /// Regular expressions used by this crate.
 pub(crate) mod re {
     use std::sync::LazyLock;
 
-    use super::formatcp;
+    use const_format::formatcp;
     use regex::Regex;
 
     const JSON_STRING_REGEX: &str = r#"JSON\.parse\("((?:[^"\\]|\\.)*)"\)"#;
@@ -18,8 +16,17 @@ pub(crate) mod re {
         // Old URL format: http://aceattorney.sparklin.org/jeu.php?id_proces=TRIAL_ID  (but it
         // could also use the english `player.php?trial_id` format)
         // New URL format: https://aaonline.fr/player.php?trial_id=TRIAL_ID
-        Regex::new(r"https?://(?:(?:www\.)?aaonline\.fr|aceattorney\.sparklin\.org)/(?:player\.php\?trial_id|jeu\.php\?id_proces)=(\d+)").unwrap()
+        Regex::new(
+            r"(https?://[-a-zA-Z0-9@:%._=/]+/)(?:player\.php\?trial_id|jeu\.php\?id_proces)=(\d+)",
+        )
+        .unwrap()
     });
+
+    pub(crate) static AAONLINE_HOST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"https?://(?:(?:www\.)?aaonline\.fr|aceattorney\.sparklin\.org)/").unwrap()
+    });
+
+    pub(crate) static AAONLINE_MAIN_HOST: &str = "https://aaonline.fr/";
 
     pub(crate) static TRIAL_INFORMATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(formatcp!(
@@ -117,12 +124,10 @@ pub(crate) mod re {
     });
 }
 
-pub(crate) const AAONLINE_BASE: &str = "https://aaonline.fr";
-
 pub(crate) const UPDATE_MESSAGE: &str =
     "This means a new player has been released and the script needs to be updated.";
 
-pub(crate) const BRIDGE_URL: &str = formatcp!("{AAONLINE_BASE}/bridge.js.php");
+pub(crate) const BRIDGE_URL: &str = "bridge.js.php";
 
 pub(crate) const BITBUCKET_URL: &str =
     "https://bitbucket.org/AceAttorneyOnline/aao-game-creation-engine/raw/";

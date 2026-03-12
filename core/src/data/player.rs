@@ -1,19 +1,18 @@
 //! Contains data model related to the case player and its scripts.
 
 use crate::args::Userscripts;
-use crate::constants::{AAONLINE_BASE, BITBUCKET_URL, re};
+use crate::constants::{BITBUCKET_URL, re};
 use crate::download::Download;
 use crate::transform::php;
 use crate::{GlobalContext, ProgressReporter};
 use anyhow::{Context, Result};
 
-use const_format::formatcp;
 use futures_util::{StreamExt, stream};
 use itertools::Itertools;
 use log::{debug, trace, warn};
 
+use crate::AaofflineClient;
 use regex::{Captures, Regex};
-use reqwest_middleware::ClientWithMiddleware;
 use serde_json::Value;
 
 use std::collections::HashSet;
@@ -100,22 +99,22 @@ struct JsModule {
 impl PlayerScripts {
     /// Retrieves the JavaScript text for the module with the given [name].
     async fn retrieve_js_text(
-        client: &ClientWithMiddleware,
+        client: &AaofflineClient,
         name: &str,
         player_version: &str,
     ) -> Result<String> {
         let url = if name == "default_data" {
             // This is a special case—we can unfortunately not use the source code of AAO here
             // and need to access the rendered version from aaonline.fr, since this is a PHP file.
-            formatcp!("{AAONLINE_BASE}/default_data.js.php")
+            "default_data.js.php".to_string()
         } else if name == "trial" {
             // This one is also a PHP file, but we don't need the PHP-generated data as we already
             // retrieved it previously.
-            &format!("{BITBUCKET_URL}/{player_version}/trial.js.php")
+            format!("{BITBUCKET_URL}/{player_version}/trial.js.php")
         } else {
-            &format!("{BITBUCKET_URL}/{player_version}/Javascript/{name}.js")
+            format!("{BITBUCKET_URL}/{player_version}/Javascript/{name}.js")
         };
-        client.get(url).send()
+        client.get(&url).send()
             .await
             .with_context(|| {
                 "Could not download scripts from AAO repository. Please check your internet connection."
@@ -380,7 +379,7 @@ impl Player {
 
     /// Retrieves the player code from the AAO repository.
     pub(crate) async fn retrieve_player(&mut self) -> Result<()> {
-        let mut player = self.scripts.ctx.client.get(format!(
+        let mut player = self.scripts.ctx.client.get(&format!(
             "{BITBUCKET_URL}/{}/player.php",
             self.scripts.ctx.args.player_version
         ))
