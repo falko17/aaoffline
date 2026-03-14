@@ -17,7 +17,7 @@ pub(crate) mod re {
         // could also use the english `player.php?trial_id` format)
         // New URL format: https://aaonline.fr/player.php?trial_id=TRIAL_ID
         Regex::new(
-            r"(https?://[-a-zA-Z0-9@:%._=/]+/)(?:player\.php\?trial_id|jeu\.php\?id_proces)=(\d+)",
+            r"(https?://[-a-zA-Z0-9@:%._=/\[\]]+/)(?:player\.php\?trial_id|jeu\.php\?id_proces)=(\d+)",
         )
         .unwrap()
     });

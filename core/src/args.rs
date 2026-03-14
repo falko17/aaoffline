@@ -258,9 +258,9 @@ impl Args {
         cases: &[(u32, Option<String>)],
     ) -> Result<(Url, Option<String>), String> {
         let inferred_base = if let Some(first_host) = cases.iter().find_map(|x| x.1.as_ref()) {
-            if let Some((_, Some(other_host))) = cases
+            if let Some(other_host) = cases
                 .iter()
-                .find(|(_, host)| host.as_ref() != Some(first_host))
+                .find_map(|(_, host)| host.as_ref().filter(|x| *x != first_host))
             {
                 return Err(format!(
                     "All cases must be from the same host, but both \"{other_host}\" and \"{first_host}\" are present"

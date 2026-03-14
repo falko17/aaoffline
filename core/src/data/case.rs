@@ -144,7 +144,7 @@ impl Case {
         client: &crate::AaofflineClient,
     ) -> Result<Case> {
         let case_script = client
-            .get(&format!("trial.js.php?trial_id={case_id}",))
+            .get(&format!("trial.js.php?trial_id={case_id}",))?
             .send()
             .await
             .context("Could not download case data. Please check your internet connection.")?

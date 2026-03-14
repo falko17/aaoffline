@@ -52,7 +52,7 @@ pub(crate) struct AaofflineClient {
 }
 
 impl AaofflineClient {
-    pub(crate) fn get(&self, url: &str) -> reqwest_middleware::RequestBuilder {
+    pub(crate) fn get(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder> {
         let url = if constants::re::AAONLINE_HOST_REGEX.is_match(url) {
             // If the URL is already a full URL to aaonline, we can just use it as is.
             url.to_string()
@@ -60,10 +60,10 @@ impl AaofflineClient {
             // Otherwise, we need to construct the full URL using the base URL.
             self.base_url
                 .join(url)
-                .expect("URL should be valid")
+                .with_context(|| format!("URL {url} is not a valid relative URL and could not be joined with base URL {}", self.base_url))?
                 .to_string()
         };
-        self.inner.get(url)
+        Ok(self.inner.get(url))
     }
 }
 
