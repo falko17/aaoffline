@@ -6,6 +6,7 @@ repository.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+default-run = "aaoffline"
 
 [[bin]]
 name = "aaoffline"
