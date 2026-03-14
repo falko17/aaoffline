@@ -63,7 +63,7 @@ impl Download {
         };
 
         // Actually download the file.
-        let content = client.get(&target).send().await.with_context(|| {
+        let content = client.get(&target)?.send().await.with_context(|| {
             format!("Could not download file from {target}. Please check your internet connection.")
         })?;
         // NOTE: We need to use the final URL for the output path since the extension may differ.

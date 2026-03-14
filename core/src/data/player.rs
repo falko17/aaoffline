@@ -114,7 +114,7 @@ impl PlayerScripts {
         } else {
             format!("{BITBUCKET_URL}/{player_version}/Javascript/{name}.js")
         };
-        client.get(&url).send()
+        client.get(&url)?.send()
             .await
             .with_context(|| {
                 "Could not download scripts from AAO repository. Please check your internet connection."
@@ -382,7 +382,7 @@ impl Player {
         let mut player = self.scripts.ctx.client.get(&format!(
             "{BITBUCKET_URL}/{}/player.php",
             self.scripts.ctx.args.player_version
-        ))
+        ))?
         .send()
         .await
         .with_context(|| {
@@ -415,7 +415,7 @@ impl Player {
                 debug!("Downloading userscript {url}...");
                 pb.inc(1);
                 client
-                    .get(url)
+                    .get(url)?
                     .send()
                     .await
                     .context("Could not download userscript.")?

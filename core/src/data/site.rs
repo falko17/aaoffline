@@ -162,7 +162,7 @@ impl SitePaths {
         // We only need to retrieve the bridge script because we need to know the configuration of
         // aaonline.fr. We don't need it for the JS module system, as we'll handle that manually.
         let bridge = client
-            .get(BRIDGE_URL)
+            .get(BRIDGE_URL)?
             .send()
             .await
             .context(
