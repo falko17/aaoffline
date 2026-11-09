@@ -7,7 +7,7 @@ use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use human_panic::setup_panic;
 
-use io::{CliInteraction, CliProgressBar};
+use io::CliProgressBar;
 use log::error;
 
 mod args;
@@ -26,8 +26,9 @@ async fn main() -> Result<()> {
         .init();
 
     let writer = Box::new(TokioFsWriter);
-    let pb = Box::new(CliProgressBar::new());
-    let interact = Box::new(CliInteraction);
+    let pb = CliProgressBar::new();
+    let interact = Box::new(pb.interaction());
+    let pb = Box::new(pb);
     let mut ctx = MainContext::new(args, writer, interact, pb);
     ctx.run_all_steps().await.inspect_err(|e| error!("{e}"))
 }

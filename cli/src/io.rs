@@ -1,6 +1,9 @@
+use std::io::{IsTerminal, stdin};
+use std::sync::Arc;
 use std::time::Duration;
 
-use aaoffline::{InteractiveDialog, MAX_STEPS, ProgressReporter};
+use aaoffline::{ChallengeHandler, InteractiveDialog, MAX_STEPS, ProgressReporter, Url};
+use async_trait::async_trait;
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar};
 use std::sync::RwLock;
@@ -13,7 +16,10 @@ pub(crate) struct CliProgressBar {
 }
 
 #[derive(Debug)]
-pub(crate) struct CliInteraction;
+pub(crate) struct CliInteraction {
+    /// The progress bars to hide while we ask the user something.
+    multi_progress: MultiProgress,
+}
 
 impl InteractiveDialog for CliInteraction {
     fn confirm(&mut self, prompt: &str, default_value: bool) -> Option<bool> {
@@ -23,9 +29,58 @@ impl InteractiveDialog for CliInteraction {
             .interact_opt()
             .unwrap_or(Some(default_value))
     }
+
+    fn challenge_handler(&self) -> Option<Arc<dyn ChallengeHandler>> {
+        Some(Arc::new(CliChallengeHandler {
+            multi_progress: self.multi_progress.clone(),
+        }))
+    }
+}
+
+/// Asks the user on the terminal to solve a bot challenge in the browser.
+#[derive(Debug)]
+struct CliChallengeHandler {
+    /// The progress bars to hide while we ask the user.
+    multi_progress: MultiProgress,
+}
+
+#[async_trait]
+impl ChallengeHandler for CliChallengeHandler {
+    async fn solve(&self, url: &Url) -> bool {
+        if !stdin().is_terminal() {
+            return false;
+        }
+        let multi_progress = self.multi_progress.clone();
+        let url = url.clone();
+        tokio::task::spawn_blocking(move || {
+            multi_progress.suspend(|| {
+                eprintln!(
+                    "\n{}\nOpen this link in your browser and solve the captcha:\n\n    {}\n",
+                    "Ace Attorney Online wants to verify that you are human.".yellow(),
+                    url.as_str().underline()
+                );
+                dialoguer::Confirm::new()
+                    .with_prompt("Did you solve the captcha? Retry now?")
+                    .default(true)
+                    .interact_opt()
+                    .ok()
+                    .flatten()
+                    .unwrap_or(false)
+            })
+        })
+        .await
+        .unwrap_or(false)
+    }
 }
 
 impl CliProgressBar {
+    /// Returns a [`CliInteraction`] that hides these progress bars while it asks the user.
+    pub(crate) fn interaction(&self) -> CliInteraction {
+        CliInteraction {
+            multi_progress: self.multi_progress.clone(),
+        }
+    }
+
     pub(crate) fn new() -> CliProgressBar {
         let multi_progress = MultiProgress::new();
 

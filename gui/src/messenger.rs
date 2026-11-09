@@ -1,10 +1,17 @@
 use std::sync::Arc;
 
-use aaoffline::{InteractiveDialog, MainContext, ProgressReporter, args::Args, fs::TokioFsWriter};
+use aaoffline::{
+    ChallengeHandler, InteractiveDialog, MainContext, ProgressReporter, Url, args::Args,
+    fs::TokioFsWriter,
+};
+use async_trait::async_trait;
 use log::{error, info, warn};
 use tokio::{
     runtime::Runtime,
-    sync::mpsc::{Receiver, Sender},
+    sync::{
+        mpsc::{Receiver, Sender},
+        oneshot,
+    },
 };
 
 #[derive(Debug)]
@@ -66,8 +73,17 @@ impl GuiMessenger {
 pub(crate) enum GuiMessage {
     // Bool indicates success.
     Done(bool),
-    NextStep { step: u8, text: String },
+    NextStep {
+        step: u8,
+        text: String,
+    },
     Progress(ProgressMessage),
+    /// Ace Attorney Online wants the user to solve the challenge at [url].
+    /// The UI answers via [reply] whether the user solved it.
+    Challenge {
+        url: Url,
+        reply: oneshot::Sender<bool>,
+    },
 }
 
 #[derive(Debug)]
@@ -95,6 +111,27 @@ impl GuiMessageSender {
 impl InteractiveDialog for GuiMessageSender {
     fn confirm(&mut self, _: &str, _: bool) -> Option<bool> {
         unimplemented!()
+    }
+
+    fn challenge_handler(&self) -> Option<Arc<dyn ChallengeHandler>> {
+        Some(Arc::new(self.clone()))
+    }
+}
+
+#[async_trait]
+impl ChallengeHandler for GuiMessageSender {
+    async fn solve(&self, url: &Url) -> bool {
+        let (reply, answer) = oneshot::channel();
+        let msg = GuiMessage::Challenge {
+            url: url.clone(),
+            reply,
+        };
+        if let Err(e) = self.sender.send(msg).await {
+            error!("Could not ask UI to show the captcha challenge: {e}");
+            return false;
+        }
+        // If the UI drops the reply sender, we treat that as "not solved".
+        answer.await.unwrap_or(false)
     }
 }
 

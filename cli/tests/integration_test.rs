@@ -1,5 +1,6 @@
 use std::{
     error::Error,
+    ffi::OsStr,
     fmt::Display,
     fs,
     path::PathBuf,
@@ -179,7 +180,9 @@ fn verify_with_browser_common(
     with_redirection: bool,
     append_index: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let options = LaunchOptionsBuilder::default().build()?;
+    let options = LaunchOptionsBuilder::default()
+        .args(vec![OsStr::new("--mute-audio")])
+        .build()?;
     let browser = Browser::new(options)?;
     let tab = browser.new_tab()?;
     // We register a listener to capture any JavaScript errors, and then open the offline case.

@@ -1,8 +1,10 @@
-use aaoffline::MAX_STEPS;
+use aaoffline::{MAX_STEPS, Url};
 use egui::{
-    Align, Color32, Label, ProgressBar, RichText, ScrollArea, TextFormat, Theme, text::LayoutJob,
+    Align, Color32, Id, Label, Modal, ProgressBar, RichText, ScrollArea, TextFormat, Theme,
+    text::LayoutJob,
 };
 use log::{error, info};
+use tokio::sync::oneshot;
 
 use crate::{
     args::GuiArgs,
@@ -47,6 +49,8 @@ pub(crate) struct AaofflineApp {
     current_step: Option<(u8, String)>,
     current_progress: Option<Progress>,
     enable_force_quit: bool,
+    /// The captcha challenge that the user must solve (challenge URL, reply channel).
+    challenge: Option<(Url, oneshot::Sender<bool>)>,
 }
 
 #[derive(Debug)]
@@ -121,7 +125,43 @@ impl AaofflineApp {
                     info!("{msg}");
                     self.current_progress = None;
                 }
+                crate::messenger::GuiMessage::Challenge { url, reply } => {
+                    self.challenge = Some((url, reply));
+                }
             }
+        }
+    }
+
+    /// Shows a modal that asks the user to solve the captcha challenge, if there is one.
+    fn show_challenge(&mut self, ctx: &egui::Context) {
+        let Some((url, _)) = self.challenge.as_ref() else {
+            return;
+        };
+        let mut answer = None;
+        Modal::new(Id::new("challenge")).show(ctx, |ui| {
+            ui.set_max_width(400.0);
+            ui.heading("Verification Required");
+            ui.label(
+                "Ace Attorney Online wants to verify that you are human. \
+                 Open the link below in your browser and solve the captcha. \
+                 Then click \"Retry\".",
+            );
+            ui.hyperlink_to("Open verification page", url.as_str());
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Retry").clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Cancel Download").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        if let Some(answer) = answer
+            && let Some((_, reply)) = self.challenge.take()
+        {
+            // The download may have ended in the meantime, so we can ignore a closed channel.
+            let _ = reply.send(answer);
         }
     }
 }
@@ -130,6 +170,7 @@ impl eframe::App for AaofflineApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_messages();
+        self.show_challenge(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                 let header = RichText::new("aaoffline")

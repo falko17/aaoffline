@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.101"
+async-trait = "0.1.89"
 colored = { version = "3.1.1", features = ["no-color"] }
 eframe = "0.33.3"
 egui = "0.33.3"
@@ -24,7 +25,7 @@ rfd = "0.17.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 aaoffline = { path = "../core", features = ["fs"] }
-tokio = { version = "1.49.0", features = ["rt-multi-thread"] }
+tokio = { version = "1.49.0", features = ["rt-multi-thread", "sync"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 aaoffline = { path = "../core" }

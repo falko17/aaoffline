@@ -23,14 +23,18 @@ use futures_util::{StreamExt, TryFutureExt};
 use itertools::Itertools;
 use log::{Level, debug, info, warn};
 use middleware::AaofflineMiddleware;
-use reqwest::{Client, Url};
+pub use middleware::{ChallengeHandler, ChallengeRequired};
+#[cfg(not(target_arch = "wasm32"))]
+use middleware::{ChallengeMiddleware, NoRateLimitRetryStrategy, RateLimitMiddleware};
+use reqwest::Client;
+pub use reqwest::Url;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::io::{IsTerminal, stdin};
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -42,6 +46,13 @@ use crate::args::SequenceErrorHandling;
 
 /// The total number of steps that aaoffline needs to go through.
 pub const MAX_STEPS: u8 = 8;
+
+/// The first delay before a retry after status 429 (too many requests) without `Retry-After`.
+#[cfg(not(target_arch = "wasm32"))]
+const RATE_LIMIT_BASE_DELAY: Duration = Duration::from_secs(5);
+/// The maximum delay before a retry after status 429 (too many requests).
+#[cfg(not(target_arch = "wasm32"))]
+const RATE_LIMIT_MAX_DELAY: Duration = Duration::from_secs(60);
 
 #[derive(Debug)]
 pub(crate) struct AaofflineClient {
@@ -161,6 +172,13 @@ pub trait ProgressReporter: Debug + Send + Sync {
 pub trait InteractiveDialog: Debug + Send + Sync {
     /// Ask the user to confirm the given yes/no [prompt], using [default_value] as the default choice.
     fn confirm(&mut self, prompt: &str, default_value: bool) -> Option<bool>;
+
+    /// Returns the handler that asks the user to solve bot challenges from Ace Attorney Online.
+    ///
+    /// Without a handler, a challenge makes the download fail with [`ChallengeRequired`].
+    fn challenge_handler(&self) -> Option<Arc<dyn ChallengeHandler>> {
+        None
+    }
 }
 
 impl MainContext {
@@ -246,8 +264,17 @@ impl MainContext {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let retry_policy = ExponentialBackoff::builder().build_with_max_retries(args.retries);
-            client_builder =
-                client_builder.with(RetryTransientMiddleware::new_with_policy(retry_policy));
+            client_builder = client_builder
+                .with(RetryTransientMiddleware::new_with_policy_and_strategy(
+                    retry_policy,
+                    NoRateLimitRetryStrategy,
+                ))
+                .with(ChallengeMiddleware::new(dialog.challenge_handler()))
+                .with(RateLimitMiddleware::new(
+                    args.retries,
+                    RATE_LIMIT_BASE_DELAY,
+                    RATE_LIMIT_MAX_DELAY,
+                ));
         }
 
         let client = AaofflineClient {
@@ -688,6 +715,17 @@ impl MainContext {
     /// Since this function runs all steps consecutively, each of the errors that can occur for the
     /// individual steps can also occur here.
     pub async fn run_all_steps(&mut self) -> Result<()> {
+        // A challenge error is often wrapped in a misleading context (e.g., "check your internet
+        // connection"), so we report it directly.
+        self.run_steps()
+            .await
+            .map_err(|e| match ChallengeRequired::find(&e) {
+                Some(challenge) => anyhow!(challenge.clone()),
+                None => e,
+            })
+    }
+
+    async fn run_steps(&mut self) -> Result<()> {
         self.show_step(1, "Retrieving case information...");
         let mut cases: Vec<_> = self.retrieve_case_infos().await?;
         let num_cases = cases.len();
